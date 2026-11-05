@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="{{LANG}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}}</title>
+<meta name="description" content="{{DESCRIPTION}}">
+<meta property="og:title" content="{{TITLE}}">
+<meta property="og:description" content="{{DESCRIPTION}}">
+<meta name="theme-color" content="#141416">
+<meta name="robots" content="noindex">
+{{OG}}
+<link rel="icon" href="/favicon.ico" sizes="48x48">
+<link rel="icon" href="/static/icons/icon.svg" type="image/svg+xml">
+<link rel="icon" href="/static/icons/icon-192.png" type="image/png" sizes="192x192">
+<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="site">{{SITE_NAME}}</span>
+    <span class="meta" id="meta"></span>
+  </div>
+  <div class="actions">
+    <div class="chips" id="chips"></div>
+    <div class="dl-wrap">
+      <button class="btn" id="dl-all" aria-expanded="false" data-i18n="下載 ▾">下載 ▾</button>
+      <div class="dl-menu" id="dl-menu" hidden></div>
+    </div>
+    <button class="btn secondary" id="dl-cancel" hidden data-i18n="取消">取消</button>
+  </div>
+</header>
+<main id="main"><div class="loading" data-i18n="讀取中…">讀取中…</div></main>
+<div class="lightbox" id="lightbox" hidden>
+  <button class="lb-close" id="lb-close" data-i18n-label="關閉" aria-label="關閉">×</button>
+  <button class="lb-nav lb-prev" id="lb-prev" data-i18n-label="上一張" aria-label="上一張">‹</button>
+  <img id="lb-img" alt="">
+  <button class="lb-nav lb-next" id="lb-next" data-i18n-label="下一張" aria-label="下一張">›</button>
+  <div class="lb-bar">
+    <span id="lb-name"></span>
+    <span id="lb-info"></span>
+    <span class="lb-links"><a id="lb-dl" href="#" download data-i18n="下載 JPG">下載 JPG</a><a id="lb-raw" href="#" download hidden data-i18n="下載 RAW">下載 RAW</a></span>
+  </div>
+</div>
+<script src="/static/i18n.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

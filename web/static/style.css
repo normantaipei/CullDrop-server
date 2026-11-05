@@ -1,0 +1,57 @@
+/* Culldrop 返圖頁：設計書 §9b 的 token */
+:root {
+  --bg: #141416; --card: #1E1E22; --ink: #F2F2F2; --ink-soft: #9A9AA3; --line: #2C2C33;
+  --brand: #5B6CFF; --chip: #26262C; --chip-ink: #D6D6DC; --star: #F7B500; --radius: 14px; --gap: 12px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); font-family: -apple-system, "Noto Sans TC", "PingFang TC", system-ui, sans-serif; }
+a { color: inherit; text-decoration: none; }
+.top { position: sticky; top: 0; z-index: 5; display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  padding: 12px 20px; background: rgba(20,20,22,0.92); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+.brand { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+.site { font-size: 16px; font-weight: 700; white-space: nowrap; }
+.meta { font-size: 13px; color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.actions { display: flex; align-items: center; gap: 10px; }
+.chips { display: flex; gap: 8px; overflow-x: auto; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 999px; background: var(--chip); color: var(--chip-ink);
+  font-size: 13px; white-space: nowrap; cursor: pointer; border: 0; font-family: inherit; }
+.chip.on { background: var(--brand); color: #fff; }
+.chip .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.btn { padding: 8px 14px; border-radius: 10px; background: #F2F2F2; color: #141416; font-size: 13px; font-weight: 600; white-space: nowrap; }
+.btn.secondary { background: var(--chip); color: var(--ink); }
+.section-head { display: flex; align-items: center; gap: 10px; height: 52px; padding: 0 20px; border-bottom: 1px solid var(--line); cursor: pointer; user-select: none; }
+.section-head .stars { color: var(--star); font-size: 18px; letter-spacing: 1px; }
+.section-head .count { color: var(--ink-soft); font-size: 15px; }
+.section-head .arrow { margin-left: auto; color: var(--ink-soft); transition: transform .15s; }
+.section-head.closed .arrow { transform: rotate(180deg); }
+.grid { display: flex; flex-direction: column; }
+.row { display: flex; }
+.row.last { justify-content: flex-start; }
+.tile { display: block; overflow: hidden; background: var(--card); position: relative; }
+.tile img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: 0; transition: opacity .2s; }
+.tile img.ok { opacity: 1; }
+.empty, .loading { padding: 60px 20px; text-align: center; color: var(--ink-soft); }
+.lightbox { position: fixed; inset: 0; background: rgba(0,0,0,0.95); z-index: 20; display: flex; align-items: center; justify-content: center; }
+.lightbox[hidden] { display: none; }
+.lightbox img { max-width: 100vw; max-height: calc(100vh - 56px); object-fit: contain; }
+.lb-close, .lb-nav { position: absolute; background: rgba(38,38,44,0.8); color: #fff; border: 0; border-radius: 999px; width: 40px; height: 40px; font-size: 24px; cursor: pointer; }
+.lb-close { top: 14px; right: 14px; }
+.lb-nav { top: 50%; transform: translateY(-50%); }
+.lb-prev { left: 12px; } .lb-next { right: 12px; }
+.lb-bar { position: absolute; bottom: 0; left: 0; right: 0; height: 56px; display: flex; align-items: center; gap: 16px; padding: 0 20px;
+  background: rgba(20,20,22,0.92); border-top: 1px solid var(--line); font-size: 13px; color: var(--ink-soft); }
+.lb-bar #lb-name { color: var(--ink); font-weight: 600; }
+.lb-links { margin-left: auto; display: flex; gap: 14px; }
+.lb-links a { color: #8B97FF; }
+@media (max-width: 640px) {
+  .top { padding: 10px 12px; flex-wrap: wrap; }
+  .actions { width: 100%; justify-content: space-between; }
+  .section-head { padding: 0 12px; }
+}
+
+.dl-wrap { position: relative; }
+.dl-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; min-width: 220px; padding: 6px; background: var(--card, #1E1E22); border: 1px solid var(--line, #2C2C33); border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.45); }
+.dl-menu a, .dl-menu button { display: flex; justify-content: space-between; gap: 16px; width: 100%; padding: 10px 12px; border: 0; border-radius: 8px; background: none; color: var(--ink, #F2F2F2); font: inherit; font-size: 14px; text-align: left; text-decoration: none; cursor: pointer; }
+.dl-menu a:hover, .dl-menu button:hover { background: var(--chip, #26262C); }
+.dl-menu span { color: var(--ink-soft, #9A9AA3); font-size: 12px; white-space: nowrap; }
+.dl-menu p { margin: 6px 12px 4px; color: var(--ink-soft, #9A9AA3); font-size: 12px; }

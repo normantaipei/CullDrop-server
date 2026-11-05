@@ -1,0 +1,7 @@
+.DS_Store
+server/.venv/
+server/data/
+deploy/data/
+__pycache__/
+*.pyc
+.env

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024"><defs>
+<linearGradient id="dark" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#26262C"/><stop offset="1" stop-color="#111113"/></linearGradient>
+<linearGradient id="brand" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7C8AFF"/><stop offset="1" stop-color="#3D4BE0"/></linearGradient>
+<linearGradient id="gold" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFD24D"/><stop offset="1" stop-color="#F7B500"/></linearGradient>
+</defs><rect rx="229" width="1024" height="1024" fill="url(#brand)"/><path d="M656.2 310.1 A276 276 0 1 0 656.2 713.9" fill="none" stroke="#FFFFFF" stroke-width="116" stroke-linecap="round"/><polygon points="750.0,400.0 782.6,473.1 862.2,481.5 802.7,535.1 819.4,613.5 750.0,573.5 680.6,613.5 697.3,535.1 637.8,481.5 717.4,473.1" fill="url(#gold)" stroke="url(#gold)" stroke-width="18.9" stroke-linejoin="round"/></svg>
