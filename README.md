@@ -1,6 +1,6 @@
 # Culldrop Server
 
-Self-hosted server and client gallery for the [Culldrop](https://normantaipei.github.io/culldrop-server/) iOS app.
+Self-hosted server and client gallery for the [Culldrop](https://normantaipei.github.io/CullDrop-server/) iOS app.
 
 **English** · [繁體中文](README.zh-Hant.md) · [日本語](README.ja.md)
 
@@ -11,7 +11,7 @@ One server holds many albums. The app manages them with a device token, and your
 Debian or Ubuntu, as root. It prints the server URL and device token at the end.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/normantaipei/culldrop-server/main/deploy/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/normantaipei/CullDrop-server/main/deploy/install.sh | bash
 ```
 
 Enter both in the app under **Settings → Server**. Include `http://` or `https://` in the URL.
@@ -23,7 +23,7 @@ Running it again updates the program. Your tokens and photos are not touched.
 On the Proxmox host, this creates an LXC and installs into it. The default disk is 200 GB, and photos are stored there.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/normantaipei/culldrop-server/main/deploy/install-lxc.sh | CT_DISK_GB=200 bash
+curl -fsSL https://raw.githubusercontent.com/normantaipei/CullDrop-server/main/deploy/install-lxc.sh | CT_DISK_GB=200 bash
 ```
 
 For a fixed IP, add `CT_NET=name=eth0,bridge=vmbr0,ip=192.168.1.50/24,gw=192.168.1.1`.
@@ -31,7 +31,7 @@ For a fixed IP, add `CT_NET=name=eth0,bridge=vmbr0,ip=192.168.1.50/24,gw=192.168
 ### Docker
 
 ```bash
-git clone https://github.com/normantaipei/culldrop-server.git && cd culldrop-server
+git clone https://github.com/normantaipei/CullDrop-server.git && cd CullDrop-server
 CULLDROP_DEVICE_TOKENS="iphone:$(openssl rand -hex 24)" docker compose -f deploy/docker-compose.yml up -d
 ```
 
@@ -49,7 +49,7 @@ CULLDROP_DEVICE_TOKENS="iphone:$(openssl rand -hex 24)" CULLDROP_DATA=./data \
 Share links need a public address, and iOS only allows `https://` outside your local network. Put a reverse proxy such as Caddy or Nginx in front of port 8000, then install with:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/normantaipei/culldrop-server/main/deploy/install.sh | CULLDROP_PUBLIC_URL=https://photos.example.com CULLDROP_TRUSTED_PROXIES=192.168.1.10 bash
+curl -fsSL https://raw.githubusercontent.com/normantaipei/CullDrop-server/main/deploy/install.sh | CULLDROP_PUBLIC_URL=https://photos.example.com CULLDROP_TRUSTED_PROXIES=192.168.1.10 bash
 ```
 
 `CULLDROP_TRUSTED_PROXIES` is your proxy's IP, so login blocking sees the real source address.
@@ -61,7 +61,7 @@ Received files are copied to `<NAS>/<album>/<original filename>`, with ratings a
 On a Proxmox host, this mounts SMB on the host and binds it into the LXC. It asks for the NAS password.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/normantaipei/culldrop-server/main/deploy/setup-nas.sh | NAS_SHARE=//192.168.1.10/share/photos NAS_USER=photos bash
+curl -fsSL https://raw.githubusercontent.com/normantaipei/CullDrop-server/main/deploy/setup-nas.sh | NAS_SHARE=//192.168.1.10/share/photos NAS_USER=photos bash
 ```
 
 On other systems, mount the share yourself, create an empty `.culldrop-nas` file in it, and set `CULLDROP_NAS_DIR`.
@@ -93,7 +93,7 @@ You run this server, so you are responsible for the photos on it, including the 
 
 ## Help
 
-Report problems in [Issues](https://github.com/normantaipei/culldrop-server/issues). Remove tokens and private URLs from anything you post.
+Report problems in [Issues](https://github.com/normantaipei/CullDrop-server/issues). Remove tokens and private URLs from anything you post.
 
 ## License
 

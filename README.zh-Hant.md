@@ -1,6 +1,6 @@
 # Culldrop Server
 
-[Culldrop](https://normantaipei.github.io/culldrop-server/zh-Hant/) iOS app 的自架伺服器與返圖頁。
+[Culldrop](https://normantaipei.github.io/CullDrop-server/zh-Hant/) iOS app 的自架伺服器與返圖頁。
 
 [English](README.md) · **繁體中文** · [日本語](README.ja.md)
 
@@ -11,7 +11,7 @@
 Debian 或 Ubuntu，用 root 跑，最後會印出伺服器網址和裝置 token。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/normantaipei/culldrop-server/main/deploy/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/normantaipei/CullDrop-server/main/deploy/install.sh | bash
 ```
 
 把兩個值填進 app 的「設定 → 伺服器」，網址要連 `http://` 或 `https://` 一起填。
@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/normantaipei/culldrop-server/main/d
 在 Proxmox 主機上跑，會開一台 LXC 再裝進去。磁碟預設 200 GB，照片都存在裡面。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/normantaipei/culldrop-server/main/deploy/install-lxc.sh | CT_DISK_GB=200 bash
+curl -fsSL https://raw.githubusercontent.com/normantaipei/CullDrop-server/main/deploy/install-lxc.sh | CT_DISK_GB=200 bash
 ```
 
 要固定 IP 就加 `CT_NET=name=eth0,bridge=vmbr0,ip=192.168.1.50/24,gw=192.168.1.1`。
@@ -31,7 +31,7 @@ curl -fsSL https://raw.githubusercontent.com/normantaipei/culldrop-server/main/d
 ### Docker
 
 ```bash
-git clone https://github.com/normantaipei/culldrop-server.git && cd culldrop-server
+git clone https://github.com/normantaipei/CullDrop-server.git && cd CullDrop-server
 CULLDROP_DEVICE_TOKENS="iphone:$(openssl rand -hex 24)" docker compose -f deploy/docker-compose.yml up -d
 ```
 
@@ -49,7 +49,7 @@ CULLDROP_DEVICE_TOKENS="iphone:$(openssl rand -hex 24)" CULLDROP_DATA=./data \
 分享連結要有對外網址，而 iOS 在區網以外只允許 `https://`。在 8000 port 前面放 Caddy 或 Nginx 這類反向代理，再這樣安裝：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/normantaipei/culldrop-server/main/deploy/install.sh | CULLDROP_PUBLIC_URL=https://photos.example.com CULLDROP_TRUSTED_PROXIES=192.168.1.10 bash
+curl -fsSL https://raw.githubusercontent.com/normantaipei/CullDrop-server/main/deploy/install.sh | CULLDROP_PUBLIC_URL=https://photos.example.com CULLDROP_TRUSTED_PROXIES=192.168.1.10 bash
 ```
 
 `CULLDROP_TRUSTED_PROXIES` 填反向代理的 IP，登入封鎖才看得到真實來源。
@@ -61,7 +61,7 @@ curl -fsSL https://raw.githubusercontent.com/normantaipei/culldrop-server/main/d
 在 Proxmox 主機上跑，會把 SMB 掛在主機再綁進 LXC，過程會問 NAS 密碼。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/normantaipei/culldrop-server/main/deploy/setup-nas.sh | NAS_SHARE=//192.168.1.10/share/photos NAS_USER=photos bash
+curl -fsSL https://raw.githubusercontent.com/normantaipei/CullDrop-server/main/deploy/setup-nas.sh | NAS_SHARE=//192.168.1.10/share/photos NAS_USER=photos bash
 ```
 
 其他系統請自己掛載，在裡面建立空檔案 `.culldrop-nas`，再設定 `CULLDROP_NAS_DIR`。
@@ -93,7 +93,7 @@ curl -fsSL https://raw.githubusercontent.com/normantaipei/culldrop-server/main/d
 
 ## 協助
 
-問題請開 [Issue](https://github.com/normantaipei/culldrop-server/issues)。貼內容前請拿掉 token 和私人網址。
+問題請開 [Issue](https://github.com/normantaipei/CullDrop-server/issues)。貼內容前請拿掉 token 和私人網址。
 
 ## 授權
 

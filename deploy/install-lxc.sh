@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 在 Proxmox 主機上開一台 LXC 並裝好 Culldrop 伺服器（用 root 跑）：
-#   curl -fsSL https://raw.githubusercontent.com/normantaipei/culldrop-server/main/deploy/install-lxc.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/normantaipei/CullDrop-server/main/deploy/install-lxc.sh | bash
 # 重跑 = 更新同一台（hostname 相同就沿用），token 和照片不會動。
 # 可覆寫：CT_NAME、CT_DISK_GB（照片都存這裡）、CT_CORES、CT_MEMORY、CT_NET、CT_STORAGE、CT_TEMPLATE_STORAGE
 # 對外網址：CULLDROP_PUBLIC_URL=https://…（反向代理時再加 CULLDROP_TRUSTED_PROXIES=代理 IP），會寫進 LXC 的設定
@@ -17,7 +17,7 @@ DISK_GB=${CT_DISK_GB:-200}
 CORES=${CT_CORES:-2}
 MEMORY=${CT_MEMORY:-2048}
 NET=${CT_NET:-name=eth0,bridge=vmbr0,ip=dhcp}
-INSTALL_URL=${CULLDROP_INSTALL_URL:-https://raw.githubusercontent.com/normantaipei/culldrop-server/main/deploy/install.sh}
+INSTALL_URL=${CULLDROP_INSTALL_URL:-https://raw.githubusercontent.com/normantaipei/CullDrop-server/main/deploy/install.sh}
 
 # 支援這種內容、可用空間最大的儲存
 storage_for() {

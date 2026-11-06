@@ -1,6 +1,6 @@
 # Culldrop Server
 
-iOS アプリ [Culldrop](https://normantaipei.github.io/culldrop-server/ja/) のセルフホスト用サーバーとギャラリーです。
+iOS アプリ [Culldrop](https://normantaipei.github.io/CullDrop-server/ja/) のセルフホスト用サーバーとギャラリーです。
 
 [English](README.md) · [繁體中文](README.zh-Hant.md) · **日本語**
 
@@ -11,7 +11,7 @@ iOS アプリ [Culldrop](https://normantaipei.github.io/culldrop-server/ja/) の
 Debian または Ubuntu で、root として実行します。最後にサーバー URL とデバイストークンが表示されます。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/normantaipei/culldrop-server/main/deploy/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/normantaipei/CullDrop-server/main/deploy/install.sh | bash
 ```
 
 アプリの「設定 → サーバー」に両方を入力してください。URL には `http://` または `https://` も含めます。
@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/normantaipei/culldrop-server/main/d
 Proxmox ホストで実行すると、LXC を作成してインストールします。ディスクの初期値は 200 GB で、写真はここに保存されます。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/normantaipei/culldrop-server/main/deploy/install-lxc.sh | CT_DISK_GB=200 bash
+curl -fsSL https://raw.githubusercontent.com/normantaipei/CullDrop-server/main/deploy/install-lxc.sh | CT_DISK_GB=200 bash
 ```
 
 固定 IP にするには `CT_NET=name=eth0,bridge=vmbr0,ip=192.168.1.50/24,gw=192.168.1.1` を追加します。
@@ -31,7 +31,7 @@ curl -fsSL https://raw.githubusercontent.com/normantaipei/culldrop-server/main/d
 ### Docker
 
 ```bash
-git clone https://github.com/normantaipei/culldrop-server.git && cd culldrop-server
+git clone https://github.com/normantaipei/CullDrop-server.git && cd CullDrop-server
 CULLDROP_DEVICE_TOKENS="iphone:$(openssl rand -hex 24)" docker compose -f deploy/docker-compose.yml up -d
 ```
 
@@ -49,7 +49,7 @@ CULLDROP_DEVICE_TOKENS="iphone:$(openssl rand -hex 24)" CULLDROP_DATA=./data \
 共有リンクには公開 URL が必要で、iOS はローカルネットワーク外では `https://` のみ許可します。ポート 8000 の前に Caddy や Nginx などのリバースプロキシを置き、次のようにインストールしてください。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/normantaipei/culldrop-server/main/deploy/install.sh | CULLDROP_PUBLIC_URL=https://photos.example.com CULLDROP_TRUSTED_PROXIES=192.168.1.10 bash
+curl -fsSL https://raw.githubusercontent.com/normantaipei/CullDrop-server/main/deploy/install.sh | CULLDROP_PUBLIC_URL=https://photos.example.com CULLDROP_TRUSTED_PROXIES=192.168.1.10 bash
 ```
 
 `CULLDROP_TRUSTED_PROXIES` にはプロキシの IP を指定します。これによりログインのブロックが実際の接続元を判別できます。
@@ -61,7 +61,7 @@ curl -fsSL https://raw.githubusercontent.com/normantaipei/culldrop-server/main/d
 Proxmox ホストで実行すると、SMB をホストにマウントして LXC にバインドします。途中で NAS のパスワードを尋ねます。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/normantaipei/culldrop-server/main/deploy/setup-nas.sh | NAS_SHARE=//192.168.1.10/share/photos NAS_USER=photos bash
+curl -fsSL https://raw.githubusercontent.com/normantaipei/CullDrop-server/main/deploy/setup-nas.sh | NAS_SHARE=//192.168.1.10/share/photos NAS_USER=photos bash
 ```
 
 その他のシステムでは共有を自分でマウントし、空のファイル `.culldrop-nas` を作成して `CULLDROP_NAS_DIR` を設定してください。
@@ -93,7 +93,7 @@ curl -fsSL https://raw.githubusercontent.com/normantaipei/culldrop-server/main/d
 
 ## サポート
 
-問題は [Issues](https://github.com/normantaipei/culldrop-server/issues) で報告してください。投稿前にトークンと非公開の URL を削除してください。
+問題は [Issues](https://github.com/normantaipei/CullDrop-server/issues) で報告してください。投稿前にトークンと非公開の URL を削除してください。
 
 ## ライセンス
 

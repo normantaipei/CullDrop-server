@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Culldrop 伺服器一行安裝（Debian / Ubuntu，用 root 跑）：
-#   curl -fsSL https://raw.githubusercontent.com/normantaipei/culldrop-server/main/deploy/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/normantaipei/CullDrop-server/main/deploy/install.sh | bash
 # 重跑 = 更新程式；/etc/culldrop.env（token）和 /srv/culldrop（照片）不會動。
 # 可給：CULLDROP_LANG、CULLDROP_PUBLIC_URL、CULLDROP_TRUSTED_PROXIES（有給才寫進 env，重跑也會更新）
 set -euo pipefail
 
-REPO=${CULLDROP_REPO:-https://github.com/normantaipei/culldrop-server.git}
+REPO=${CULLDROP_REPO:-https://github.com/normantaipei/CullDrop-server.git}
 APP=/opt/culldrop
 DATA=/srv/culldrop
 ENV_FILE=/etc/culldrop.env

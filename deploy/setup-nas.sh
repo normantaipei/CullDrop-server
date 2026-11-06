@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 在 Proxmox 主機上把 NAS 接給 Culldrop（用 root 跑）：掛 SMB 到主機、綁進 LXC、打開備份。
-#   curl -fsSL https://raw.githubusercontent.com/normantaipei/culldrop-server/main/deploy/setup-nas.sh | NAS_SHARE=//192.168.1.10/share/photos NAS_USER=photos bash
+#   curl -fsSL https://raw.githubusercontent.com/normantaipei/CullDrop-server/main/deploy/setup-nas.sh | NAS_SHARE=//192.168.1.10/share/photos NAS_USER=photos bash
 # 無特權 LXC 不能自己掛 SMB，所以掛在主機再用 mp0 綁進去。密碼存在主機的 /etc/culldrop-nas.cred（600），不進 repo。
 # 可覆寫：CT_NAME、NAS_PASSWORD（不給就問）、NAS_MOUNT
 set -euo pipefail
@@ -15,7 +15,7 @@ MOUNT=${NAS_MOUNT:-/mnt/culldrop-nas}
 CRED=${NAS_CRED:-/etc/culldrop-nas.cred}
 FSTAB=${NAS_FSTAB:-/etc/fstab}
 CT_MOUNT=/mnt/nas
-INSTALL_URL=${CULLDROP_INSTALL_URL:-https://raw.githubusercontent.com/normantaipei/culldrop-server/main/deploy/install.sh}
+INSTALL_URL=${CULLDROP_INSTALL_URL:-https://raw.githubusercontent.com/normantaipei/CullDrop-server/main/deploy/install.sh}
 
 main() {
   [ "$(id -u)" -eq 0 ] || die "請用 root 執行" "Run this as root." "root で実行してください。"
