@@ -97,4 +97,4 @@ Email csps40608a@gmail.com or open an [issue](https://github.com/normantaipei/Cu
 
 ## License
 
-[PolyForm Noncommercial 1.0.0](LICENSE). Personal, hobby, and other noncommercial use is free. This license does not allow commercial use. For commercial use, email csps40608a@gmail.com.
+[PolyForm Noncommercial 1.0.0](LICENSE) with an added permission for photographers. You can use it for personal projects and for your own photography work, including paid client work. You may not resell it or offer it to others as a hosted service or other commercial product. For other commercial use, email csps40608a@gmail.com.

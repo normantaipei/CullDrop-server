@@ -97,4 +97,4 @@ csps40608a@gmail.com へメールするか、[Issues](https://github.com/normant
 
 ## ライセンス
 
-[PolyForm Noncommercial 1.0.0](LICENSE)。個人利用や趣味などの非商用利用は無料です。このライセンスでは商用利用はできません。商用利用については csps40608a@gmail.com へご連絡ください。
+[PolyForm Noncommercial 1.0.0](LICENSE) に、フォトグラファー向けの追加許諾を加えています。個人利用に加え、有償案件を含む自身の撮影業務に使用できます。再販売や、ホスティングサービスなどの商用製品として他者に提供することはできません。その他の商用利用については csps40608a@gmail.com へご連絡ください。英語の LICENSE が優先されます。

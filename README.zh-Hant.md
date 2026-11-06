@@ -97,4 +97,4 @@ curl -fsSL https://raw.githubusercontent.com/normantaipei/CullDrop-server/main/d
 
 ## 授權
 
-[PolyForm Noncommercial 1.0.0](LICENSE)。個人、業餘等非商業用途可免費使用，本授權不允許商業用途。商業用途請寄信到 csps40608a@gmail.com。
+[PolyForm Noncommercial 1.0.0](LICENSE)，並額外開放給攝影師使用。個人用途和你自己的攝影工作都可以使用，包括收費案件。不得轉售，也不得包裝成代管服務或其他商業產品提供給他人。其他商業用途請寄信到 csps40608a@gmail.com。以英文的 LICENSE 為準。
