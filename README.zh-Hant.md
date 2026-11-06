@@ -93,8 +93,8 @@ curl -fsSL https://raw.githubusercontent.com/normantaipei/CullDrop-server/main/d
 
 ## 協助
 
-問題請開 [Issue](https://github.com/normantaipei/CullDrop-server/issues)。貼內容前請拿掉 token 和私人網址。
+請寄信到 csps40608a@gmail.com，或開 [Issue](https://github.com/normantaipei/CullDrop-server/issues)。貼內容前請拿掉 token 和私人網址。
 
 ## 授權
 
-[MIT](LICENSE)
+[PolyForm Noncommercial 1.0.0](LICENSE)。個人、業餘等非商業用途可免費使用，本授權不允許商業用途。商業用途請寄信到 csps40608a@gmail.com。

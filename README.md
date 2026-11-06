@@ -93,8 +93,8 @@ You run this server, so you are responsible for the photos on it, including the 
 
 ## Help
 
-Report problems in [Issues](https://github.com/normantaipei/CullDrop-server/issues). Remove tokens and private URLs from anything you post.
+Email csps40608a@gmail.com or open an [issue](https://github.com/normantaipei/CullDrop-server/issues). Remove tokens and private URLs from anything you post.
 
 ## License
 
-[MIT](LICENSE)
+[PolyForm Noncommercial 1.0.0](LICENSE). Personal, hobby, and other noncommercial use is free. This license does not allow commercial use. For commercial use, email csps40608a@gmail.com.

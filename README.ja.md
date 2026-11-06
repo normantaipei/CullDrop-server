@@ -93,8 +93,8 @@ curl -fsSL https://raw.githubusercontent.com/normantaipei/CullDrop-server/main/d
 
 ## サポート
 
-問題は [Issues](https://github.com/normantaipei/CullDrop-server/issues) で報告してください。投稿前にトークンと非公開の URL を削除してください。
+csps40608a@gmail.com へメールするか、[Issues](https://github.com/normantaipei/CullDrop-server/issues) で報告してください。投稿前にトークンと非公開の URL を削除してください。
 
 ## ライセンス
 
-[MIT](LICENSE)
+[PolyForm Noncommercial 1.0.0](LICENSE)。個人利用や趣味などの非商用利用は無料です。このライセンスでは商用利用はできません。商用利用については csps40608a@gmail.com へご連絡ください。
