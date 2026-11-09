@@ -79,6 +79,7 @@ _MESSAGES = [
     ("max_stars 要在 1～5", "max_stars must be 1 to 5", "max_stars は 1〜5 で指定してください"),
     ("人物 id 格式錯誤", "Invalid person id", "人物 id の形式が正しくありません"),
     ("要有名字", "A name is required", "名前が必要です"),
+    ("人物資料太多", "Too much people data", "人物データが多すぎます"),
     ("stars 要在 1～5", "stars must be 1 to 5", "stars は 1〜5 で指定してください"),
     ("fmt 要是 jpg、raw 或 all", "fmt must be jpg, raw, or all", "fmt は jpg、raw、all のいずれかにしてください"),
     ("返圖頁檔案不存在：{}", "Gallery page file is missing: {0}", "ギャラリーページのファイルがありません: {0}"),

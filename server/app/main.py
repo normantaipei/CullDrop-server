@@ -70,6 +70,12 @@ OG_MIN_STARS = 4              # 預覽圖貼出去就收不回來：只用挑過
 PAIR_TOLERANCE = 2.0          # JPG / RAW 拍攝時間相差幾秒內算同一張
 UPLOAD_STALE_SEC = 6 * 3600   # 沒動靜的半成品上傳多久後清掉
 
+# 手機端 API 的版本。加了 app 要靠它才能用的功能就加一；只能往上加東西，舊版 app 用到的不能改、不能拿掉。
+# app 從 /api/manage/me 的 "api" 讀（舊伺服器沒有這一欄 = 1），比 app 認得的舊就提醒使用者更新伺服器。
+#   1 = 上傳、相簿管理、人物分享連結
+#   2 = 人物同步（/api/manage/albums/{slug}/face-tags）
+SERVER_API = 2
+
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 SLUG_RE = re.compile(r"^[\w.\-]{1,100}$")
 NAME_RE = re.compile(r"^[\w.\-]{1,40}$")
@@ -179,6 +185,19 @@ CREATE TABLE IF NOT EXISTS album_people_photos (
     person_pk INTEGER NOT NULL REFERENCES album_people(id) ON DELETE CASCADE,
     photo_id TEXT NOT NULL,
     PRIMARY KEY (person_pk, photo_id)
+);
+CREATE TABLE IF NOT EXISTS album_face_tags (   -- 人物同步：哪張照片有誰。只有名字，沒有人臉資料；連同一台伺服器的其他手機拿來對齊名字和分類
+    album_id INTEGER NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    photo_id TEXT NOT NULL,
+    PRIMARY KEY (album_id, name, photo_id)
+);
+CREATE TABLE IF NOT EXISTS album_face_revs (   -- 每寫一次加一：手機帶著上次讀到的版本來寫，中間被別支改過就要重讀
+    album_id INTEGER PRIMARY KEY REFERENCES albums(id) ON DELETE CASCADE,
+    rev INTEGER NOT NULL,
+    epoch TEXT NOT NULL,             -- 清空後重新開始會換一個：手機靠它知道手上記的「上次同步」已經不能用
+    device TEXT,
+    updated_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS nas_files (     -- 每個檔案一列（只有 RAW 的照片不在 photos 表，也要備份）
     sha TEXT NOT NULL,
@@ -1046,6 +1065,11 @@ class PersonIn(BaseModel):
     photo_ids: list
 
 
+class FaceTagsIn(BaseModel):
+    base_rev: int = 0
+    people: dict   # {名字: [photo_id, …]}
+
+
 class CamerasIn(BaseModel):
     cameras: dict   # {key: {"name": "...", "creator": "..."}} 或 {key: "name"}
 
@@ -1064,7 +1088,7 @@ def manage_me(request: Request, authorization: Optional[str] = Header(None)):
     with db() as con:
         n = con.execute("SELECT COUNT(*) FROM albums").fetchone()[0]
         backup = nas_summary(con)
-    return {"device": device, "albums": n, "free_gb": round(shutil.disk_usage(DATA_DIR).free / 1e9, 1), "public_url": PUBLIC_URL, "backup": backup,
+    return {"device": device, "api": SERVER_API, "albums": n, "free_gb": round(shutil.disk_usage(DATA_DIR).free / 1e9, 1), "public_url": PUBLIC_URL, "backup": backup,
             "storage": disk_json(DATA_DIR), "nas_storage": disk_json(NAS_DIR) if nas_ready() else None}
 
 
@@ -1210,6 +1234,66 @@ def manage_delete_person(slug: str, person_id: str, request: Request, authorizat
         a = album_by_slug(con, slug)
         n = con.execute("DELETE FROM album_people WHERE album_id=? AND person_id=?", (a["id"], person_id)).rowcount
     return {"removed": n > 0}
+
+
+# ---------- 人物同步 ----------
+
+FACE_TAG_NAMES = 2000      # 一本相簿最多幾個名字
+FACE_TAG_PAIRS = 200000    # 最多幾筆「照片 × 名字」
+
+
+def face_tags_json(con, album_id: int) -> dict:
+    row = con.execute("SELECT rev, epoch FROM album_face_revs WHERE album_id=?", (album_id,)).fetchone()
+    people: dict = {}
+    for r in con.execute("SELECT name, photo_id FROM album_face_tags WHERE album_id=? ORDER BY name, photo_id", (album_id,)):
+        people.setdefault(r["name"], []).append(r["photo_id"])
+    return {"rev": row["rev"] if row else 0, "epoch": row["epoch"] if row else "", "people": people}
+
+
+@app.get("/api/manage/albums/{slug}/face-tags")
+def manage_face_tags(slug: str, request: Request, authorization: Optional[str] = Header(None)):
+    """這本相簿取過名字的人物：名字 → 照片。rev 0 = 還沒有人寫過（或被清掉了）；epoch 清空後會換。"""
+    require_device(request, authorization)
+    with db() as con:
+        return face_tags_json(con, album_by_slug(con, slug)["id"])
+
+
+@app.put("/api/manage/albums/{slug}/face-tags")
+def manage_put_face_tags(slug: str, body: FaceTagsIn, request: Request, authorization: Optional[str] = Header(None)):
+    """整份取代。base_rev 要等於現在的 rev：不等表示別支手機先寫了，回 409 和現在的內容，手機合併後再送。"""
+    device = require_device(request, authorization)
+    pairs = set()
+    for raw_name, ids in body.people.items():
+        name = raw_name.strip()[:80] if isinstance(raw_name, str) else ""
+        if not name or not isinstance(ids, list):
+            continue
+        pairs |= {(name, i) for i in ids if isinstance(i, str) and SHA_RE.match(i)}
+    if len({n for n, _ in pairs}) > FACE_TAG_NAMES or len(pairs) > FACE_TAG_PAIRS:
+        raise HTTPException(413, "人物資料太多")
+    with db() as con:
+        con.execute("BEGIN IMMEDIATE")   # 讀版本和寫入要在同一個交易裡，兩支手機同時寫才不會互蓋
+        a = album_by_slug(con, slug)
+        current = face_tags_json(con, a["id"])
+        if body.base_rev != current["rev"]:
+            return JSONResponse(current, status_code=409)
+        rev = current["rev"] + 1
+        con.execute("DELETE FROM album_face_tags WHERE album_id=?", (a["id"],))
+        con.executemany("INSERT INTO album_face_tags (album_id, name, photo_id) VALUES (?,?,?)", [(a["id"], n, i) for n, i in pairs])
+        con.execute("""INSERT INTO album_face_revs (album_id, rev, epoch, device, updated_at) VALUES (?,?,?,?,?)
+                       ON CONFLICT(album_id) DO UPDATE SET rev=excluded.rev, device=excluded.device, updated_at=excluded.updated_at""",
+                    (a["id"], rev, secrets.token_hex(8), device, time.time()))
+        return face_tags_json(con, a["id"])
+
+
+@app.delete("/api/manage/albums/{slug}/face-tags")
+def manage_delete_face_tags(slug: str, request: Request, authorization: Optional[str] = Header(None)):
+    """清掉這本相簿的人物資料，版本歸零。其他還開著同步的手機下次會把自己的再送上來。"""
+    require_device(request, authorization)
+    with db() as con:
+        a = album_by_slug(con, slug)
+        n = con.execute("DELETE FROM album_face_tags WHERE album_id=?", (a["id"],)).rowcount
+        con.execute("DELETE FROM album_face_revs WHERE album_id=?", (a["id"],))
+    return {"removed": n}
 
 
 @app.delete("/api/manage/albums/{slug}")

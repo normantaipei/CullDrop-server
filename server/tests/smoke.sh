@@ -167,6 +167,37 @@ chk "$(curl -s -o /dev/null -w '%{http_code}' $B/media/$PK/o/$J1X)" 404 "stopped
 R=$(curl -s -X PUT -H "$T" -H 'Content-Type: application/json' -d '{"name":"W","photo_ids":[]}' $B/api/manage/albums/wedding_2026/people/w1)
 WK=$(echo $R | j 'd["share_key"]')
 
+echo "— 版本：app 靠它知道伺服器要不要更新"
+chk "$(curl -s -H "$T" $B/api/manage/me | j 'd["api"]')" 2 "api level reported"
+
+echo "— 人物同步：名字 → 照片，帶版本寫入"
+FT=$B/api/manage/albums/cos_2026/face-tags; T2="Authorization: Bearer tok2"
+ftput() { curl -s -o $TMP/ft.json -w '%{http_code}' -X PUT -H "$1" -H 'Content-Type: application/json' -d "$2" $FT; }
+chk "$(curl -s -o /dev/null -w '%{http_code}' $FT)" 401 "face tags need token"
+chk "$(curl -s -H "$T" $FT | j 'd["rev"]')" 0 "nothing written yet"
+chk "$(ftput "$T" "{\"base_rev\":0,\"people\":{\" Saki \":[\"$J2\",\"bad\"],\"\":[\"$J1X\"],\"Mio\":[\"$J1X\",\"$J2\"]}}")" 200 "first write"
+chk "$(j 'd["rev"]' < $TMP/ft.json)" 1 "rev starts at 1"
+chk "$(j 'sorted(d["people"])' < $TMP/ft.json)" "['Mio', 'Saki']" "names trimmed, empty name dropped"
+chk "$(j 'len(d["people"]["Saki"])' < $TMP/ft.json)" 1 "bad photo id dropped"
+chk "$(curl -s -H "$T2" $FT | j 'len(d["people"]["Mio"])')" 2 "another device reads the same"
+chk "$(ftput "$T2" "{\"base_rev\":0,\"people\":{\"Other\":[\"$J2\"]}}")" 409 "stale write is refused"
+chk "$(j 'd["rev"]' < $TMP/ft.json)" 1 "conflict returns the current version"
+chk "$(j 'sorted(d["people"])' < $TMP/ft.json)" "['Mio', 'Saki']" "conflict returns the current people"
+chk "$(curl -s -H "$T" $FT | j 'sorted(d["people"])')" "['Mio', 'Saki']" "refused write changed nothing"
+chk "$(ftput "$T2" "{\"base_rev\":1,\"people\":{\"Saki\":[\"$J1X\"]}}")" 200 "write with the current version"
+chk "$(curl -s -H "$T" $FT | j '(d["rev"], d["people"])')" "(2, {'Saki': ['$J1X']})" "whole document replaced"
+EP=$(curl -s -H "$T" $FT | j 'd["epoch"]')
+chk "${#EP}" 16 "epoch issued on first write"
+chk "$(j 'd["epoch"]' < $TMP/ft.json)" "$EP" "epoch stays across writes"
+chk "$(curl -s -H "$T" $B/api/manage/albums/wedding_2026/face-tags | j '(d["rev"], d["people"])')" "(0, {})" "other album untouched"
+chk "$(curl -s -o /dev/null -w '%{http_code}' -H "$T" $B/api/manage/albums/nope/face-tags)" 404 "unknown album"
+chk "$(curl -s $B/api/share/$KEY | grep -c Saki)" 0 "names are not on the public share API"
+chk "$(curl -s -X DELETE -H "$T" $FT | j 'd["removed"]')" 1 "cleared"
+chk "$(curl -s -H "$T" $FT | j '(d["rev"], d["epoch"], d["people"])')" "(0, '', {})" "version back to 0 after clearing"
+ftput "$T" "{\"base_rev\":0,\"people\":{\"Saki\":[\"$J2\"]}}" >/dev/null
+chk "$([ "$(j 'd["epoch"]' < $TMP/ft.json)" != "$EP" ] && echo new)" new "new epoch after clearing"
+curl -s -X DELETE -H "$T" $FT >/dev/null
+
 echo "— NAS 備份（沒有標記檔 = 沒掛上，不能算備份）"
 mkdir -p $TMP/nas
 J1=${IDS[1]}
