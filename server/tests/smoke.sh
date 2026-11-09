@@ -168,7 +168,7 @@ R=$(curl -s -X PUT -H "$T" -H 'Content-Type: application/json' -d '{"name":"W","
 WK=$(echo $R | j 'd["share_key"]')
 
 echo "— 版本：app 靠它知道伺服器要不要更新"
-chk "$(curl -s -H "$T" $B/api/manage/me | j 'd["api"]')" 2 "api level reported"
+chk "$(curl -s -H "$T" $B/api/manage/me | j 'd["api"]')" 3 "api level reported"
 
 echo "— 人物同步：名字 → 照片，帶版本寫入"
 FT=$B/api/manage/albums/cos_2026/face-tags; T2="Authorization: Bearer tok2"
@@ -197,6 +197,36 @@ chk "$(curl -s -H "$T" $FT | j '(d["rev"], d["epoch"], d["people"])')" "(0, '', 
 ftput "$T" "{\"base_rev\":0,\"people\":{\"Saki\":[\"$J2\"]}}" >/dev/null
 chk "$([ "$(j 'd["epoch"]' < $TMP/ft.json)" != "$EP" ] && echo new)" new "new epoch after clearing"
 curl -s -X DELETE -H "$T" $FT >/dev/null
+
+echo "— 人臉分群完整同步：一張照片只分群一次，其他手機拉下來用"
+FS=$B/api/manage/faces
+P1=11111111-1111-4111-8111-111111111111; P2=22222222-2222-4222-8222-222222222222
+F1=AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAA1; F2=AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAA2; F3=AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAA3
+fpost() { curl -s -o $TMP/fs.json -w '%{http_code}' -X POST -H "$1" -H 'Content-Type: application/json' -d "$2" $FS; }
+chk "$(curl -s -o /dev/null -w '%{http_code}' $FS)" 401 "face sync needs token"
+chk "$(curl -s -H "$T" $FS | j '(d["epoch"], d["seq"], d["more"], d["records"])')" "('', 0, False, [])" "empty at first"
+chk "$(curl -s -H "$T" $B/api/manage/me | j 'd["api"]')" 3 "api level 3"
+NOPE=$(printf 'f%.0s' {1..64})
+chk "$(fpost "$T" "{\"source\":\"one\",\"epoch\":\"\",\"people\":[{\"id\":\"$P1\",\"name\":\" Saki \",\"created\":1},{\"id\":\"bad\"}],\"scans\":[{\"photo\":\"$J2\",\"faces\":[{\"id\":\"$F1\",\"person\":\"$P1\",\"vector\":\"AAEC\",\"box\":[0.1,0.2,0.3,0.4]},{\"id\":\"$F2\",\"person\":\"nope\"}]},{\"photo\":\"$NOPE\",\"faces\":[]}]}")" 200 "first scan accepted"
+EPF=$(j 'd["epoch"]' < $TMP/fs.json)
+chk "${#EPF}" 16 "epoch issued"
+chk "$(j 'd["unknown"]' < $TMP/fs.json)" "['$NOPE']" "photo not on the server is held back"
+chk "$(j 'd["skipped"]' < $TMP/fs.json)" "[]" "nothing skipped"
+chk "$(curl -s -H "$T2" "$FS?source=two" | j 'sorted((r["kind"], r.get("name"), r.get("photo"), r.get("vector"), r.get("box")) for r in d["records"])' | tr -d ' ')" "[('face',None,'$J2','AAEC',[0.1,0.2,0.3,0.4]),('person','Saki',None,None,None),('photo',None,None,None,None)]" "another phone pulls people, faces and the scanned marker"
+chk "$(curl -s -H "$T" "$FS?source=one" | j '(len(d["records"]), d["seq"])')" "(0, 3)" "own writes are not sent back, cursor still advances"
+chk "$(fpost "$T2" "{\"source\":\"two\",\"epoch\":\"$EPF\",\"scans\":[{\"photo\":\"$J2\",\"faces\":[{\"id\":\"$F3\",\"person\":\"$P2\"}]}]}")" 200 "second scan of the same photo"
+chk "$(j 'd["skipped"]' < $TMP/fs.json)" "['$J2']" "already clustered photo is not clustered again"
+chk "$(curl -s -H "$T" $FS | j 'len([r for r in d["records"] if r["kind"]=="face"])')" 1 "the first result stands"
+chk "$(fpost "$T2" "{\"source\":\"two\",\"epoch\":\"stale\",\"people\":[{\"id\":\"$P2\",\"name\":\"X\"}]}")" 409 "wrong epoch refused"
+chk "$(j 'd["epoch"]' < $TMP/fs.json)" "$EPF" "conflict tells the current epoch"
+chk "$(fpost "$T2" "{\"source\":\"two\",\"epoch\":\"$EPF\",\"people\":[{\"id\":\"$P2\",\"name\":\"Mio\"}],\"faces\":[{\"id\":\"$F1\",\"photo\":\"$J2\",\"person\":\"$P2\",\"vector\":\"AAEC\"},{\"id\":\"$F3\",\"photo\":\"$J2\",\"person\":\"$P2\"}]}")" 200 "edit: reassign a face, add a manual one"
+SEQ=$(j 'd["seq"]' < $TMP/fs.json)
+chk "$(curl -s -H "$T" "$FS?since=3&source=one" | j 'sorted((r["kind"], r.get("person") or r.get("name")) for r in d["records"])' | tr -d ' ')" "[('face','$P2'),('face','$P2'),('person','Mio')]" "only what changed since the cursor"
+chk "$(curl -s -H "$T" "$FS?since=3&limit=1" | j '(len(d["records"]), d["more"])')" "(1, True)" "paged"
+chk "$(fpost "$T" "{\"source\":\"one\",\"epoch\":\"$EPF\",\"faces\":[{\"id\":\"$F3\",\"deleted\":true}],\"people\":[{\"id\":\"$P1\",\"deleted\":true}]}")" 200 "delete a face and a person"
+chk "$(curl -s -H "$T2" "$FS?since=$SEQ" | j 'sorted((r["kind"], r.get("deleted"), "vector" in r) for r in d["records"])' | tr -d ' ')" "[('face',True,False),('person',True,False)]" "deletions arrive as markers without data"
+chk "$(curl -s $B/api/share/$KEY | grep -c -E 'AAEC|Mio')" 0 "face data is not on the public share API"
+chk "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE $FS)" 401 "clearing needs token"
 
 echo "— NAS 備份（沒有標記檔 = 沒掛上，不能算備份）"
 mkdir -p $TMP/nas
@@ -248,6 +278,12 @@ chk "$(me failed)" 0 "no backup failures"
 chk "$(curl -s -H "$T" $B/api/manage/me | j 'd["storage"]["total_gb"] > 0')" True "me: server disk"
 chk "$(curl -s -H "$T" $B/api/manage/me | j 'd["nas_storage"]["free_gb"] > 0')" True "me: nas disk"
 chk "$(grep -ci 'traceback' $TMP/server.log)" 0 "no server tracebacks"
+
+echo "— 刪照片後那張的人臉資料也清掉；清空後重新開始"
+chk "$(curl -s -H "$T" "$B/api/manage/faces" | j 'len([r for r in d["records"] if r["kind"] != "person" and not r.get("deleted")])')" 0 "faces of deleted photos are gone"
+chk "$(curl -s -H "$T" "$B/api/manage/faces" | j 'len([r for r in d["records"] if "vector" in r])')" 0 "no vector left behind"
+chk "$(curl -s -X DELETE -H "$T" $B/api/manage/faces | j 'd["removed"] > 0')" True "cleared"
+chk "$(curl -s -H "$T" $B/api/manage/faces | j '(d["epoch"], d["seq"])')" "('', 0)" "fresh epoch after clearing"
 
 echo "— 封鎖：只鎖連錯的人，正確的 token 永遠放行"
 BAD="Authorization: Bearer wrong"

@@ -73,14 +73,16 @@ UPLOAD_STALE_SEC = 6 * 3600   # 沒動靜的半成品上傳多久後清掉
 # 手機端 API 的版本。加了 app 要靠它才能用的功能就加一；只能往上加東西，舊版 app 用到的不能改、不能拿掉。
 # app 從 /api/manage/me 的 "api" 讀（舊伺服器沒有這一欄 = 1），比 app 認得的舊就提醒使用者更新伺服器。
 #   1 = 上傳、相簿管理、人物分享連結
-#   2 = 人物同步（/api/manage/albums/{slug}/face-tags）
-SERVER_API = 2
+#   2 = 人物同步（/api/manage/albums/{slug}/face-tags；只有名字和照片清單，舊版 app 用）
+#   3 = 人臉分群完整同步（/api/manage/faces；人物、每張臉、人臉向量）
+SERVER_API = 3
 
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 SLUG_RE = re.compile(r"^[\w.\-]{1,100}$")
 NAME_RE = re.compile(r"^[\w.\-]{1,40}$")
 UPLOAD_ID_RE = re.compile(r"^[0-9a-f]{20,64}$")
 PERSON_RE = re.compile(r"^[\w\-]{1,64}$")
+UUID_RE = re.compile(r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
 RAW_EXT = {".arw", ".cr2", ".cr3", ".nef", ".nrw", ".raf", ".orf", ".rw2", ".dng", ".pef", ".srw"}
 JPG_EXT = {".jpg", ".jpeg", ".jpe"}
 
@@ -199,6 +201,19 @@ CREATE TABLE IF NOT EXISTS album_face_revs (   -- 每寫一次加一：手機帶
     device TEXT,
     updated_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS face_sync (     -- 人臉分群完整同步：一筆一筆的紀錄，手機用 seq 拉「上次之後變了什麼」
+    kind TEXT NOT NULL,              -- person（人物）/ face（一張臉）/ photo（這張照片分群過了，沒有臉也算）
+    id TEXT NOT NULL,                -- person、face 是手機產生的 UUID；photo 是照片的 SHA-256
+    photo_id TEXT,                   -- face 所在的照片：刪照片時一起清
+    data TEXT NOT NULL DEFAULT '{}', -- person: name、created；face: person、vector（base64）、box
+    deleted INTEGER NOT NULL DEFAULT 0,
+    seq INTEGER NOT NULL,            -- 每寫一筆加一，全伺服器共用
+    source TEXT,                     -- 最後寫的那支手機（安裝時產生的代號）：拉的時候不用把自己寫的再下載一次
+    PRIMARY KEY (kind, id)
+);
+CREATE INDEX IF NOT EXISTS face_sync_seq ON face_sync(seq);
+CREATE INDEX IF NOT EXISTS face_sync_photo ON face_sync(photo_id);
+CREATE TABLE IF NOT EXISTS face_sync_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS nas_files (     -- 每個檔案一列（只有 RAW 的照片不在 photos 表，也要備份）
     sha TEXT NOT NULL,
     album TEXT NOT NULL,
@@ -1070,6 +1085,14 @@ class FaceTagsIn(BaseModel):
     people: dict   # {名字: [photo_id, …]}
 
 
+class FaceSyncIn(BaseModel):
+    source: str = ""
+    epoch: str = ""
+    scans: list = []     # [{"photo": sha, "faces": [{id, person, vector, box}]}]：新分群的照片，伺服器已經有結果就不收
+    people: list = []    # [{id, name, created, deleted}]
+    faces: list = []     # [{id, photo, person, vector, box, deleted}]：改已經分群過的照片
+
+
 class CamerasIn(BaseModel):
     cameras: dict   # {key: {"name": "...", "creator": "..."}} 或 {key: "name"}
 
@@ -1153,6 +1176,169 @@ def manage_patch_album(slug: str, body: AlbumPatch, request: Request, authorizat
         return album_json(con, album_by_slug(con, slug))
 
 
+# ---------- 人臉分群完整同步 ----------
+# 手機各自掃臉會分出不一樣的群，所以一張照片只分群一次：第一支送上來的算數，其他手機拉下來直接用。
+# 紀錄只增不刪（刪除是留一筆 deleted 的記號），手機記著拉到哪個 seq，下次只拿之後變的。
+
+FACE_PAGE = 500            # 一次最多回幾筆（一張臉連向量約 1.5KB）
+FACE_PUSH_MAX = 5000       # 一次最多收幾筆
+FACE_VECTOR_MAX = 4096     # base64 後的長度上限（512 維 16-bit 是 1368）
+
+
+def face_meta(con, key: str, default: str = "") -> str:
+    row = con.execute("SELECT value FROM face_sync_meta WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def face_set_meta(con, key: str, value: str):
+    con.execute("INSERT INTO face_sync_meta (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+
+
+class FaceWriter:
+    """一次寫入裡發 seq、寫紀錄。要在 BEGIN IMMEDIATE 的交易裡用。"""
+
+    def __init__(self, con, source: str):
+        self.con, self.source = con, source
+        self.seq = int(face_meta(con, "seq", "0"))
+
+    def put(self, kind: str, rid: str, data: dict, photo_id: Optional[str] = None, deleted: bool = False):
+        self.seq += 1
+        self.con.execute(
+            """INSERT INTO face_sync (kind, id, photo_id, data, deleted, seq, source) VALUES (?,?,?,?,?,?,?)
+               ON CONFLICT(kind, id) DO UPDATE SET photo_id=excluded.photo_id, data=excluded.data, deleted=excluded.deleted,
+                                                   seq=excluded.seq, source=excluded.source""",
+            (kind, rid, photo_id, "{}" if deleted else json.dumps(data, ensure_ascii=False, separators=(",", ":")), int(deleted), self.seq, self.source))
+
+    def close(self):
+        face_set_meta(self.con, "seq", str(self.seq))
+
+
+def face_forget_photo(con, photo_id: str):
+    """照片從伺服器上完全刪掉了：那張的臉和「分群過」的記號都留下刪除記號，向量清掉。"""
+    rows = con.execute("SELECT kind, id FROM face_sync WHERE deleted=0 AND ((kind='face' AND photo_id=?) OR (kind='photo' AND id=?))",
+                       (photo_id, photo_id)).fetchall()
+    if not rows:
+        return
+    w = FaceWriter(con, "")
+    for r in rows:
+        w.put(r["kind"], r["id"], {}, photo_id if r["kind"] == "face" else None, deleted=True)
+    w.close()
+
+
+def _face_fields(f) -> Optional[dict]:
+    """檢查一張臉：person 要是 UUID；vector 是 base64 字串（手動標的沒有）；box 是四個數字。"""
+    if not isinstance(f, dict) or not isinstance(f.get("person"), str) or not UUID_RE.match(f["person"]):
+        return None
+    out = {"person": f["person"].upper()}
+    v = f.get("vector")
+    if isinstance(v, str) and v and len(v) <= FACE_VECTOR_MAX and re.fullmatch(r"[A-Za-z0-9+/=]+", v):
+        out["vector"] = v
+    b = f.get("box")
+    if isinstance(b, list) and len(b) == 4 and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in b):
+        out["box"] = [round(float(x), 5) for x in b]
+    return out
+
+
+def face_record_json(r) -> dict:
+    out = {"kind": r["kind"], "id": r["id"], "seq": r["seq"]}
+    if r["deleted"]:
+        out["deleted"] = True
+        return out
+    if r["kind"] == "face":
+        out["photo"] = r["photo_id"]
+    out.update(json.loads(r["data"]))
+    return out
+
+
+@app.get("/api/manage/faces")
+def manage_faces(request: Request, since: int = 0, limit: int = FACE_PAGE, source: str = "", authorization: Optional[str] = Header(None)):
+    """since 之後變過的紀錄，照 seq 排。more = 還有下一頁，用回傳的 seq 接著拉。source 給了就不回自己寫的。"""
+    require_device(request, authorization)
+    limit = max(1, min(limit, FACE_PAGE))
+    since = max(0, since)
+    with db() as con:
+        # 先讀最大的 seq 再查紀錄：中間有人寫入的話，那幾筆下次會再拿到一次，不會漏
+        top = int(face_meta(con, "seq", "0"))
+        rows = con.execute("SELECT * FROM face_sync WHERE seq > ? ORDER BY seq LIMIT ?", (since, limit + 1)).fetchall()
+        more = len(rows) > limit
+        rows = rows[:limit]
+        # 沒有下一頁時游標直接到最大的 seq：被 source 濾掉的那些也算拉過了
+        cursor = rows[-1]["seq"] if more else max(top, since)
+        return {"epoch": face_meta(con, "epoch"), "seq": cursor, "more": more,
+                "records": [face_record_json(r) for r in rows if not (source and r["source"] == source)]}
+
+
+@app.post("/api/manage/faces")
+def manage_post_faces(body: FaceSyncIn, request: Request, authorization: Optional[str] = Header(None)):
+    """寫入。epoch 要和伺服器的一樣（伺服器還沒有資料時是空字串）：不一樣表示伺服器被清過，回 409，手機重來。"""
+    require_device(request, authorization)
+    nested = sum(len(s["faces"]) for s in body.scans if isinstance(s, dict) and isinstance(s.get("faces"), list))
+    if len(body.scans) + len(body.people) + len(body.faces) + nested > FACE_PUSH_MAX:
+        raise HTTPException(413, "人物資料太多")
+    source = body.source[:64]
+    skipped, unknown = [], []
+    with db() as con:
+        con.execute("BEGIN IMMEDIATE")   # 發 seq 和「這張照片有沒有人送過」都要在同一個交易裡
+        epoch = face_meta(con, "epoch")
+        if body.epoch != epoch:
+            return JSONResponse({"epoch": epoch, "seq": int(face_meta(con, "seq", "0"))}, status_code=409)
+        w = FaceWriter(con, source)
+        for p in body.people:
+            if not isinstance(p, dict) or not isinstance(p.get("id"), str) or not UUID_RE.match(p["id"]):
+                continue
+            data = {}
+            if isinstance(p.get("name"), str) and p["name"].strip():
+                data["name"] = p["name"].strip()[:80]
+            if isinstance(p.get("created"), (int, float)) and not isinstance(p.get("created"), bool):
+                data["created"] = float(p["created"])
+            w.put("person", p["id"].upper(), data, deleted=bool(p.get("deleted")))
+        for scan in body.scans:
+            sha = scan.get("photo") if isinstance(scan, dict) else None
+            if not isinstance(sha, str) or not SHA_RE.match(sha):
+                continue
+            if not con.execute("SELECT 1 FROM photos WHERE photo_id=? LIMIT 1", (sha,)).fetchone():
+                unknown.append(sha)      # 照片還沒傳上來：之後再送
+                continue
+            if con.execute("SELECT 1 FROM face_sync WHERE kind='photo' AND id=? AND deleted=0", (sha,)).fetchone():
+                skipped.append(sha)      # 別支手機先分群過了：用那一份
+                continue
+            w.put("photo", sha, {})
+            for f in scan.get("faces", []) if isinstance(scan.get("faces"), list) else []:
+                fields = _face_fields(f)
+                if fields and isinstance(f.get("id"), str) and UUID_RE.match(f["id"]):
+                    w.put("face", f["id"].upper(), fields, sha)
+        for f in body.faces:
+            if not isinstance(f, dict) or not isinstance(f.get("id"), str) or not UUID_RE.match(f["id"]):
+                continue
+            fid = f["id"].upper()
+            if f.get("deleted"):
+                if con.execute("SELECT 1 FROM face_sync WHERE kind='face' AND id=? AND deleted=0", (fid,)).fetchone():
+                    old = con.execute("SELECT photo_id FROM face_sync WHERE kind='face' AND id=?", (fid,)).fetchone()
+                    w.put("face", fid, {}, old["photo_id"], deleted=True)
+                continue
+            sha, fields = f.get("photo"), _face_fields(f)
+            if not fields or not isinstance(sha, str) or not SHA_RE.match(sha):
+                continue
+            if not con.execute("SELECT 1 FROM photos WHERE photo_id=? LIMIT 1", (sha,)).fetchone():
+                continue
+            w.put("face", fid, fields, sha)
+        if w.seq > 0 and not epoch:
+            epoch = secrets.token_hex(8)
+            face_set_meta(con, "epoch", epoch)
+        w.close()
+        return {"epoch": epoch, "seq": w.seq, "skipped": skipped, "unknown": unknown}
+
+
+@app.delete("/api/manage/faces")
+def manage_delete_faces(request: Request, authorization: Optional[str] = Header(None)):
+    """清掉所有人臉分群資料（含向量），epoch 作廢。其他還開著同步的手機下次會把自己的再送上來。"""
+    require_device(request, authorization)
+    with db() as con:
+        n = con.execute("DELETE FROM face_sync").rowcount
+        con.execute("DELETE FROM face_sync_meta")
+    return {"removed": n}
+
+
 def delete_photo_rows(con, album_id: int, rows) -> int:
     deleted = 0
     for r in rows:
@@ -1168,6 +1354,7 @@ def delete_photo_rows(con, album_id: int, rows) -> int:
             _unlink(og_path(photo_id))
             _unlink(original_path(photo_id))
             con.execute("DELETE FROM uploads WHERE photo_id=?", (photo_id,))   # 之後可以重傳同一張
+            face_forget_photo(con, photo_id)
         if raw_sha and raw_name and not con.execute("SELECT 1 FROM photos WHERE raw_sha=? LIMIT 1", (raw_sha,)).fetchone():
             _unlink(raw_path(raw_sha, raw_name))
             con.execute("DELETE FROM uploads WHERE photo_id=?", (raw_sha,))
