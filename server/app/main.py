@@ -40,6 +40,7 @@ import zipfile
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Optional
+from urllib.parse import unquote
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -75,7 +76,8 @@ UPLOAD_STALE_SEC = 6 * 3600   # 沒動靜的半成品上傳多久後清掉
 #   1 = 上傳、相簿管理、人物分享連結
 #   2 = 人物同步（/api/manage/albums/{slug}/face-tags；只有名字和照片清單，舊版 app 用）
 #   3 = 人臉分群完整同步（/api/manage/faces；人物、每張臉、人臉向量）
-SERVER_API = 3
+#   4 = 上傳的中文相簿名、標籤、署名走 X-Culldrop-*-Encoded（iOS 送 header 遇到中文會從那個字切掉）
+SERVER_API = 4
 
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 SLUG_RE = re.compile(r"^[\w.\-]{1,100}$")
@@ -761,6 +763,14 @@ def healthz():
 def _h(headers, name: str) -> str:
     """同時接受 X-SnapPipe-* 與 X-Culldrop-*。
     HTTP header 以 latin-1 解碼，手機送的 UTF-8（中文標籤、署名）會變亂碼：能還原成 UTF-8 就還原。"""
+    # iOS 的 URLSession 送 header 遇到非 Latin-1 的字會從那裡截斷（「2026_11_15_殘星會」只剩「2026_11_15_」），
+    # 所以 app 另外送百分比編碼的一份；有就用這份
+    enc = headers.get(f"x-culldrop-{name}-encoded")
+    if enc:
+        try:
+            return unquote(enc.strip(), encoding="utf-8", errors="strict")
+        except UnicodeDecodeError:
+            pass
     v = (headers.get(f"x-snappipe-{name}") or headers.get(f"x-culldrop-{name}") or "").strip()
     try:
         return v.encode("latin-1").decode("utf-8")

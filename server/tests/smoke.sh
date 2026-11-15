@@ -168,7 +168,7 @@ R=$(curl -s -X PUT -H "$T" -H 'Content-Type: application/json' -d '{"name":"W","
 WK=$(echo $R | j 'd["share_key"]')
 
 echo "— 版本：app 靠它知道伺服器要不要更新"
-chk "$(curl -s -H "$T" $B/api/manage/me | j 'd["api"]')" 3 "api level reported"
+chk "$(curl -s -H "$T" $B/api/manage/me | j 'd["api"]')" 4 "api level reported"
 
 echo "— 人物同步：名字 → 照片，帶版本寫入"
 FT=$B/api/manage/albums/cos_2026/face-tags; T2="Authorization: Bearer tok2"
@@ -205,7 +205,7 @@ F1=AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAA1; F2=AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAA2
 fpost() { curl -s -o $TMP/fs.json -w '%{http_code}' -X POST -H "$1" -H 'Content-Type: application/json' -d "$2" $FS; }
 chk "$(curl -s -o /dev/null -w '%{http_code}' $FS)" 401 "face sync needs token"
 chk "$(curl -s -H "$T" $FS | j '(d["epoch"], d["seq"], d["more"], d["records"])')" "('', 0, False, [])" "empty at first"
-chk "$(curl -s -H "$T" $B/api/manage/me | j 'd["api"]')" 3 "api level 3"
+chk "$(curl -s -H "$T" $B/api/manage/me | j 'd["api"]')" 4 "api level 4 (reported)"
 NOPE=$(printf 'f%.0s' {1..64})
 chk "$(fpost "$T" "{\"source\":\"one\",\"epoch\":\"\",\"people\":[{\"id\":\"$P1\",\"name\":\" Saki \",\"created\":1},{\"id\":\"bad\"}],\"scans\":[{\"photo\":\"$J2\",\"faces\":[{\"id\":\"$F1\",\"person\":\"$P1\",\"vector\":\"AAEC\",\"box\":[0.1,0.2,0.3,0.4]},{\"id\":\"$F2\",\"person\":\"nope\"}]},{\"photo\":\"$NOPE\",\"faces\":[]}]}")" 200 "first scan accepted"
 EPF=$(j 'd["epoch"]' < $TMP/fs.json)
@@ -316,6 +316,40 @@ for r, want, name in cases:
 PYEOF
 ) > $TMP/ip.txt 2>&1
 chk "$(sort -u $TMP/ip.txt)" ok "client ip rules"
+
+echo "— 中文相簿名、標籤：iOS 會把 header 從中文處切掉，用 -Encoded 那份"
+enc() { python3 -c "import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"; }
+$PY - "$TMP" <<'PYEOF'
+import sys
+from PIL import Image
+for i in (7, 8):
+    Image.new("RGB", (300, 200), (i * 20, 90, 90)).save(f"{sys.argv[1]}/zh{i}.jpg", "JPEG")
+PYEOF
+SZ=$(stat -f %z $TMP/zh7.jpg)
+R=$(curl -s -X PUT -H "$T" -H "Content-Type: application/octet-stream" -H "Content-Range: bytes 0-$((SZ-1))/$SZ" \
+  -H "X-SnapPipe-Album: 2026_11_15_" -H "X-Culldrop-Album-Encoded: $(enc 2026_11_15_殘星會)" \
+  -H "X-SnapPipe-Filename: ZH7.JPG" -H 'X-SnapPipe-Tags: ["' -H "X-Culldrop-Tags-Encoded: $(enc '["人像","AI_VISION"]')" \
+  -H "X-Culldrop-Creator-Encoded: $(enc 諾曼)" --data-binary @$TMP/zh7.jpg $B/api/uploads/cccc0007$(printf '%032d' 0))
+chk "$(echo $R | j 'd["album"]')" "2026_11_15_殘星會" "chinese album name kept"
+chk "$(curl -s -H "$T" $B/api/manage/albums/2026_11_15_殘星會 | j 'd["photos"][0]["tags"]')" "['人像', 'AI_VISION']" "chinese tags kept"
+chk "$(curl -s -H "$T" $B/api/manage/albums/2026_11_15_殘星會 | j 'd["photos"][0]["creator"]')" "諾曼" "chinese creator kept"
+chk "$(curl -s -H "$T" $B/api/manage/me | j 'd["api"]')" 4 "api level 4"
+# 舊版 app 造成的分裂：同一場被拆成兩本，用工具併回來
+SZ=$(stat -f %z $TMP/zh8.jpg)
+curl -s -X PUT -H "$T" -H "Content-Type: application/octet-stream" -H "Content-Range: bytes 0-$((SZ-1))/$SZ" \
+  -H "X-SnapPipe-Album: 2026_11_15_" -H "X-SnapPipe-Filename: ZH8.JPG" --data-binary @$TMP/zh8.jpg $B/api/uploads/cccc0008$(printf '%032d' 0) >/dev/null
+SPLIT_KEY=$(curl -s -H "$T" $B/api/manage/albums/2026_11_15_ | j 'd["share_key"]')
+curl -s -X PUT -H "$T" -H 'Content-Type: application/json' -d '{"name":"Saki","photo_ids":[]}' $B/api/manage/albums/2026_11_15_/people/saki >/dev/null
+MERGE() { (cd "$ROOT/server" && CULLDROP_DATA=$TMP/data $PY -m tools.merge_album 2026_11_15_ 2026_11_15_殘星會 "$@" 2>&1); }
+chk "$(MERGE | head -1)" "「2026_11_15_」→「2026_11_15_殘星會」：搬 1 張，重複 0 張（丟掉來源那筆），「2026_11_15_」會刪掉" "merge preview"
+chk "$(curl -s -o /dev/null -w '%{http_code}' -H "$T" $B/api/manage/albums/2026_11_15_)" 200 "preview changes nothing"
+chk "$(MERGE --apply | tail -1)" "完成：「2026_11_15_殘星會」現在 2 張" "merge applied"
+chk "$(curl -s -o /dev/null -w '%{http_code}' -H "$T" $B/api/manage/albums/2026_11_15_)" 404 "split album gone"
+chk "$(curl -s -H "$T" $B/api/manage/albums/2026_11_15_殘星會 | j 'sorted(p["name"] for p in d["photos"])')" "['ZH7.JPG', 'ZH8.JPG']" "photos together"
+chk "$(curl -s -o /dev/null -w '%{http_code}' $B/api/share/$SPLIT_KEY)" 404 "old split link gone"
+chk "$(curl -s -X PUT -H "$T" -H 'Content-Type: application/json' -d '{"name":"Saki","photo_ids":[]}' $B/api/manage/albums/2026_11_15_殘星會/people/saki | j 'd["share_key"] is not None')" True "person link moved"
+chk "$(curl -s -X PUT -H "$T" -H "Content-Type: application/octet-stream" -H "Content-Range: bytes 0-$((SZ-1))/$SZ" -H "X-SnapPipe-Album: 2026_11_15_" -H "X-SnapPipe-Filename: ZH8.JPG" --data-binary @$TMP/zh8.jpg $B/api/uploads/cccc0008$(printf '%032d' 0) | j 'd["duplicate"]')" True "re-send after merge is a duplicate"
+chk "$(MERGE nope 2>&1 | tail -1)" "找不到相簿：2026_11_15_" "merge refuses missing album"
 
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]
