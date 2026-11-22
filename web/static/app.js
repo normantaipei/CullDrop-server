@@ -28,6 +28,7 @@
   function ratio(p) { return p.w && p.h ? p.w / p.h : 1.5; }
   function camName(k) { return (album.cameras && album.cameras[k]) || (k ? k.slice(-6) : ""); }
 
+  let renderedWidth = 0;
   function render() {
     const photos = album.photos.filter(p => !cameraFilter || p.camera === cameraFilter);
     visible = [];
@@ -36,6 +37,7 @@
     main.innerHTML = "";
     if (!photos.length) { main.innerHTML = `<div class="empty">${t("還沒有照片")}</div>`; return; }
     const width = main.clientWidth || window.innerWidth;
+    renderedWidth = width;
     for (let s = 5; s >= 1; s--) {
       const list = photos.filter(p => Math.min(5, Math.max(1, p.stars || 1)) === s)
         .sort((a, b) => (a.taken_at || "").localeCompare(b.taken_at || "") || a.name.localeCompare(b.name));
@@ -242,7 +244,14 @@
     } catch { endJob(t("下載失敗，再試一次")); }
   });
   dlCancel.addEventListener("click", () => endJob());
-  let resizeTimer; window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => album && render(), 150); });
+  // 手機瀏覽器網址列收合／展開也會觸發 resize（只有高度變），那時不必重排；只有寬度真的變了才重畫。
+  let resizeTimer;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      if (album && (main.clientWidth || window.innerWidth) !== renderedWidth) render();
+    }, 150);
+  });
 
   fetch(api).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }).then(a => { album = a; renderChips(); render(); renderMenu(); })
     .catch(() => { main.innerHTML = `<div class="empty">${t("找不到這本相簿")}</div>`; });
