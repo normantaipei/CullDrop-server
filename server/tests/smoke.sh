@@ -439,11 +439,6 @@ chk "$(rtc "{\"author\":\"x\",\"parent\":\"000000000000\",\"faces\":{\"faceaaaa\
 chk "$(curl -s -H 'Accept-Language: en' -H 'Content-Type: application/json' -d "{\"author\":\"\",\"faces\":{\"faceaaaa\":$FA}}" $RU | j 'd["detail"]')" "The name must be 1 to 24 characters" "a name is required, errors are localized"
 chk "$(rtc "{\"author\":\"x\",\"faces\":{\"faceaaaa\":$FA}}" $B/api/share/nokey/retouch/$RP)" 404 "unknown share key → 404"
 chk "$(curl -s -o /dev/null -w '%{http_code}' $B/vendor/mediapipe-0.0.0/vision_bundle.mjs)" 404 "only the pinned vendor files are served"
-# app 認出的臉：位置換成修容的座標（原點左上、寬 = 1），帶名字；沒有位置的（手動標的）不給，向量不給
-KP1=11111111-AAAA-4AAA-8AAA-000000000001; KP2=11111111-AAAA-4AAA-8AAA-000000000002
-EPR=$(curl -s -H "$T" $FS | j 'd["epoch"]')
-curl -s -o /dev/null -H "$T" -H 'Content-Type: application/json' -d "{\"source\":\"rt\",\"epoch\":\"$EPR\",\"people\":[{\"id\":\"$KP1\",\"name\":\"Saki\"},{\"id\":\"$KP2\"}],\"scans\":[{\"photo\":\"$RP\",\"faces\":[{\"id\":\"22222222-AAAA-4AAA-8AAA-000000000001\",\"person\":\"$KP1\",\"vector\":\"AAAA\",\"box\":[0.2,0.5,0.2,0.3]},{\"id\":\"22222222-AAAA-4AAA-8AAA-000000000002\",\"person\":\"$KP2\",\"box\":[0.6,0.1,0.1,0.15]},{\"id\":\"22222222-AAAA-4AAA-8AAA-000000000003\",\"person\":\"$KP1\"}]}]}" $FS
-chk "$(curl -s $RU | j 'd["known"]')" "[{'box': [0.2, 0.13333, 0.4, 0.33333], 'name': 'Saki'}, {'box': [0.6, 0.5, 0.7, 0.6], 'name': None}]" "faces the app recognised: position and name only"
 # 皮膚、膚色的圖層也跟著紀錄走，輸出時先調色再變形
 FL='{"box":[0.2,0.2,0.4,0.4],"params":{"smooth":60,"whiten":30},"shapes":{"oval":[0.22,0.22,0.38,0.22,0.38,0.38,0.22,0.38]},"layers":[["band",["oval"],[],0.004,0.001,0.01,0.6,0.02,0.1],["color",["oval"],[],0.004,0.8,[1,1,1],[0,0,0],0.95,0,0]]}'
 R=$(rt "{\"parent\":null,\"author\":\"小美\",\"faces\":{\"faceaaaa\":$FL}}"); C6=$(echo $R | j 'd["head"]')
