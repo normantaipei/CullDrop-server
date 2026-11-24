@@ -377,6 +377,27 @@ face = retouch.clean_face(raw, 800 / 1200)
 assert [layer[0] for layer in face["layers"]] == ["band", "color", "even", "shine"] and sorted(face["shapes"]) == ["skin"], face
 x0, y0, x1, y1 = ImageChops.difference(retouch.paint(im.copy(), {"f": face}), im).getbbox()
 assert 440 <= x0 <= 482 and 260 <= y0 <= 302 and 718 <= x1 <= 760 and 538 <= y1 <= 580, (x0, y0, x1, y1)
+# 身體的皮膚用點陣遮罩（PNG）：只給調色圖層用，範圍要在這個人附近，圖不能太大
+import base64, io
+from PIL import ImageDraw
+def png_of(size):
+    m = Image.new("L", size, 0); ImageDraw.Draw(m).rectangle((size[0] // 4, size[1] // 2, size[0] * 3 // 4, size[1] - 1), fill=255)
+    buf = io.BytesIO(); m.save(buf, "PNG"); return base64.b64encode(buf.getvalue()).decode()
+body = {"box": [0.3, 0.2, 0.7, 0.6], "png": png_of((40, 40))}
+tint = ["color", ["body"], [], 0.002, 1, [1.2, 1, 0.9], [0, 0, 0], 1, 0, 0]
+person = retouch.clean_face({**raw, "shapes": {**raw["shapes"], "body": body}, "layers": raw["layers"] + [tint]}, 800 / 1200)
+assert person["shapes"]["body"]["png"] == body["png"] and person["layers"][-1][0] == "color", person["layers"]
+x0, y0, x1, y1 = ImageChops.difference(retouch.paint(im.copy(), {"f": retouch.clean_face({**raw, "shapes": {"body": body}, "layers": [tint]}, 800 / 1200)}), im).getbbox()
+assert 465 <= x0 <= 482 and 465 <= y0 <= 482 and 725 <= x1 <= 746 and 718 <= y1 <= 730, (x0, y0, x1, y1)      # 遮罩的下半、中間一半（放大後邊緣會糊開幾個像素）
+for shapes, layers in (({"body": body}, [["band", ["body"], [], 0.004, 0.002, 0.02, 0.9, 0.5, 1]]),              # 不是調色
+                       ({"body": {"box": [0.3, 0.2, 0.7, 0.6], "png": png_of((400, 400))}}, [tint]),             # 太大
+                       ({"body": {"box": [0.3, 0.2, 0.7, 0.6], "png": "not a png"}}, [tint]),
+                       ({"body": {"box": [-0.4, 0.2, 0.2, 0.6], "png": body["png"]}}, [tint])):                  # 離這張臉太遠
+    try:
+        retouch.clean_face({**raw, "box": [0.45, 0.2, 0.55, 0.3], "shapes": shapes, "layers": layers}, 800 / 1200)
+        raise SystemExit(f"accepted a bad raster: {list(shapes['body'])} {layers[0][0]}")
+    except retouch.Invalid:
+        pass
 for bad in (["band", ["nope"], [], 0.004, 0.002, 0.02, 0.9, 0.5, 1], ["band", ["skin"], [], 0.004, 0.02, 0.002, 0.9, 0.5, 1],
             ["color", ["skin"], [], 0.004, 9, [1, 1, 1], [0, 0, 0], 1, 0, 0], ["blur", ["skin"], [], 0.004]):
     try:

@@ -71,13 +71,13 @@ On other systems, mount the share yourself, create an empty `.culldrop-nas` file
 For group photos where everyone wants to tune their own face. It is off by default, because anyone with a share link can use it. Turn it on with `CULLDROP_RETOUCH=1`.
 
 - **Pick a face.** Open a photo in the gallery, choose Retouch, and tap a face. If a face is missed, add it by hand.
-- **Adjust it.** Sliders come in eight groups. Face shape: face width, V shape, cheekbones, jaw, chin length and width, temples, forehead. Head and neck: head size, neck width. Eyes and brows: eye size, height, width, distance, position and corners, brow height. Nose: size, width, bridge, length, tip. Mouth: size, width, upper and lower lip, philtrum, corners. Skin: smoothing, blemishes, even tone, shine, dark circles, smile lines. Skin tone: brightness, warmth, rosiness. Makeup: eye brightening, teeth whitening, lip color, blush.
+- **Adjust it.** Sliders come in eight groups. Face shape: face size, face width, V shape, cheekbones, jaw, chin length and width, temples, forehead. Head and neck: head size, neck width. Eyes and brows: eye size, height, width, distance, position and corners, brow height. Nose: size, width, bridge, length, tip. Mouth: size, width, upper and lower lip, philtrum, corners. Skin: smoothing, blemishes, even tone, shine, dark circles, smile lines. Skin tone: brightness, warmth, rosiness, plus matching the body's skin to the face and brightening body skin. Makeup: eye brightening, teeth whitening, lip color, blush.
 - **Save a record.** Each save adds a record with your name, like a commit. The next person continues from there. Edits to different faces merge by themselves. If two people change the same face, the second one chooses which to keep.
 - **Go back any time.** The history shows who changed what. You can view or restore any record, or the original.
 
 The original file is never changed. The gallery shows the retouched version, and downloads include it as `<name>_retouch.jpg` at full size. RAW files and the NAS copy are not retouched.
 
-Faces are found in the visitor's browser with MediaPipe, so photos are not sent to a third party. The server downloads the model files (about 19 MB) from jsDelivr and Google the first time someone opens Retouch, and checks them against fixed SHA-256 values. The server needs internet access for that one download.
+Faces are found in the visitor's browser with MediaPipe, so photos are not sent to a third party. The server downloads the model files (about 19 MB) from jsDelivr and Google the first time someone opens Retouch, and checks them against fixed SHA-256 values. The body sliders need one more model (16 MB) that finds exposed skin; it is fetched the first time someone uses them. The server needs internet access for that one download.
 
 ## Language
 

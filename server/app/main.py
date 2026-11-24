@@ -21,7 +21,7 @@ Culldrop 伺服器：一台伺服器、多本相簿。
                            目錄裡要有 .culldrop-nas 標記檔才算掛上（沒掛上時掛載點是空資料夾，不能寫進去當備份）
   CULLDROP_NAS_POLL        沒工作時多久看一次（秒，預設 5）
   CULLDROP_RETOUCH         設 1 才開返圖頁的修容（捏臉）。拿得到分享連結的人都能改，所以預設不開。
-                           瀏覽器找臉用的模型（MediaPipe，約 19MB）第一次有人開修容時由伺服器下載到 <資料目錄>/vendor，伺服器要能連外網
+                           瀏覽器找臉用的模型（MediaPipe，約 35MB）第一次有人開修容時由伺服器下載到 <資料目錄>/vendor，伺服器要能連外網
 """
 
 import fcntl
@@ -1730,7 +1730,7 @@ COMMIT_RE = re.compile(r"^[0-9a-f]{12}$")
 _retouch_hits: dict = {}
 _retouch_render = threading.Semaphore(1)   # 原尺寸輸出吃記憶體，一次一張
 
-# 瀏覽器端找臉、抓特徵點用的 MediaPipe（Apache-2.0）。檔案大（約 19MB）不放進 repo：第一次用到時下載到資料目錄，用 SHA-256 核對。
+# 瀏覽器端找臉、抓特徵點、分割人像用的 MediaPipe（Apache-2.0）。檔案大（約 35MB）不放進 repo：第一次用到時下載到資料目錄，用 SHA-256 核對。
 # 照片不會離開瀏覽器與這台伺服器；下載的只有程式和模型。離線安裝可以自己把檔案放到 <資料目錄>/vendor/<版本>/。
 RETOUCH_VENDOR_VERSION = "mediapipe-1.2.3"
 _NPM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3"
@@ -1741,6 +1741,8 @@ RETOUCH_VENDOR = {
     "vision_wasm_internal.wasm": (f"{_NPM}/wasm/vision_wasm_internal.wasm", "225bc06c0f51a9cf31fea0e9e0b0243e9e01fb5ef332cc1a7fa6656dbdfdaabf", "application/wasm"),
     "face_landmarker.task": (f"{_MODELS}/face_landmarker/face_landmarker/float16/1/face_landmarker.task", "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff", "application/octet-stream"),
     "blaze_face_short_range.tflite": (f"{_MODELS}/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite", "b4578f35940bf5a1a655214a1cce5cab13eba73c1297cd78e1a04c2380b0152f", "application/octet-stream"),
+    # 人像分割（哪裡是身體的皮膚）：身體膚色用。16MB，瀏覽器要用到身體的滑桿才會來拿
+    "selfie_multiclass_256x256.tflite": (f"{_MODELS}/image_segmenter/selfie_multiclass_256x256/float32/1/selfie_multiclass_256x256.tflite", "c6748b1253a99067ef71f7e26ca71096cd449baefa8f101900ea23016507e0e0", "application/octet-stream"),
 }
 
 

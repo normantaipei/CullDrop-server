@@ -6,7 +6,7 @@
   // [組名, [[滑桿名, 標籤, 最小值], …]]；正的方向就是標籤說的方向，最小值 0 的只能往一邊調。
   // 臉型到嘴巴這幾組是搬動內容（buildPrims）；皮膚、膚色、妝感是改顏色（buildLook）
   const GROUPS = [
-    ["臉型", [["slim", "瘦臉", -100], ["vface", "V 臉", -100], ["cheek", "收顴骨", -100], ["jaw", "收下顎", -100], ["chin", "下巴長度", -100],
+    ["臉型", [["face", "臉部大小", -100], ["slim", "瘦臉", -100], ["vface", "V 臉", -100], ["cheek", "收顴骨", -100], ["jaw", "收下顎", -100], ["chin", "下巴長度", -100],
       ["chinW", "下巴寬度", -100], ["temple", "太陽穴", -100], ["forehead", "額頭高度", -100]]],
     ["頭與脖子", [["head", "頭部大小", -100], ["neck", "瘦脖子", -100]]],
     ["眼睛與眉毛", [["eye", "眼睛大小", -100], ["eyeH", "眼睛高度", -100], ["eyeW", "眼睛寬度", -100], ["eyeGap", "眼距", -100],
@@ -15,10 +15,11 @@
     ["嘴巴", [["mouth", "嘴巴大小", -100], ["mouthW", "嘴巴寬度", -100], ["lipUp", "上唇厚度", -100], ["lipLow", "下唇厚度", -100],
       ["philtrum", "人中長度", -100], ["smile", "嘴角上揚", -100]]],
     ["皮膚", [["smooth", "磨皮", 0], ["blemish", "去瑕疵", 0], ["even", "均勻膚色", 0], ["shine", "去油光", 0], ["darkCircle", "淡化黑眼圈", 0], ["fold", "淡化法令紋", 0]]],
-    ["膚色", [["whiten", "美白", -100], ["warm", "冷暖", -100], ["rosy", "紅潤", -100]]],
+    ["膚色", [["whiten", "美白", -100], ["warm", "冷暖", -100], ["rosy", "紅潤", -100], ["bodyMatch", "身體膚色統一", 0], ["bodyWhiten", "身體美白", -100]]],
     ["妝感", [["eyeBright", "亮眼", 0], ["teeth", "美牙", 0], ["lip", "唇色", -100], ["blush", "腮紅", 0]]],
   ];
   const SLIDERS = GROUPS.flatMap((g) => g[1]);
+  const BODY_SLIDERS = ["bodyMatch", "bodyWhiten"];      // 要先知道哪裡是身體的皮膚才能用的
   const GRID = 40;            // 每張臉的預覽格子數
   const POLL_MS = 8000;       // 多久看一次別人有沒有存新的
   const NAME_KEY = "culldrop.retouch.name";
@@ -68,6 +69,8 @@
       move([chin[0] + down[0] * depth * tall + u[0] * side * 0.34 * s, chin[1] + down[1] * depth * tall + u[1] * side * 0.34 * s],
         0.30 * s, [-u[0] * side, -u[1] * side], amount("neck") * 0.035 * s);
     }
+    // 臉部大小：只縮放臉的範圍（頭部大小會連頭髮一起）
+    scale(mid(top, chin), 0.85 * s, 0.85 * tall, amount("face") * 0.2);
     if (amount("head")) out.push(["s", r6((top[0] + chin[0]) / 2), r6((top[1] + chin[1]) / 2), r6(u[0]), r6(u[1]), r6(0.95 * tall), r6(0.95 * tall), r6(amount("head") * 0.12)]);
     // 眼睛：[瞳孔, 外眼角, 內眼角]
     for (const [iris, outer, inner] of [[468, 33, 133], [473, 263, 362]]) {
@@ -130,7 +133,8 @@
   };
   const r5 = (v) => Math.round(v * 1e5) / 1e5;
 
-  function buildLook(lm, params) {
+  /** body：analyseBody() 找到的身體皮膚（沒有就不做身體的圖層） */
+  function buildLook(lm, params, body) {
     const P = (i) => lm[i], shapes = {}, layers = [];
     const amount = (k) => clamp(params[k] || 0, -100, 100) / 100;
     const eyeA = mid(P(33), P(133)), eyeB = mid(P(362), P(263)), eyeMid = mid(eyeA, eyeB);
@@ -196,6 +200,13 @@
         R((1 + 0.06 * warm) * (1 + 0.05 * rosy), 1 - 0.025 * rosy, (1 - 0.06 * warm) * (1 + 0.01 * rosy)), [0, 0, 0],
         ...R(1 - 0.06 * Math.max(whiten, 0) + 0.1 * rosy, 0, 0)]);
     }
+    // 身體：把露出來的皮膚拉到和臉一樣的顏色（統一），或整個調亮調暗（美白）
+    const match = amount("bodyMatch"), bodyWhiten = amount("bodyWhiten");
+    if (body && (match > 0 || bodyWhiten)) {
+      shapes.body = body.shape;
+      layers.push(["color", ["body"], [], ...R(0.012 * s, bodyWhiten >= 0 ? 1 / (1 + 0.4 * bodyWhiten) : 1 - 0.3 * bodyWhiten),
+        R(...body.gains.map((g) => 1 + (g - 1) * match)), [0, 0, 0], ...R(1 - 0.06 * Math.max(bodyWhiten, 0), 0, 0)]);
+    }
     const blush = amount("blush");
     if (blush > 0) {
       const names = [ellipse("cheekA", P(50), 0.15 * s, 0.1 * s), ellipse("cheekB", P(280), 0.15 * s, 0.1 * s)];
@@ -246,6 +257,20 @@
   const lumaOf = (p, n) => { const out = new Float32Array(n); for (let i = 0; i < n; i++) out[i] = p[0][i] * LUMA[0] + p[1][i] * LUMA[1] + p[2][i] * LUMA[2]; return out; };
 
   const maskCanvas = document.createElement("canvas");
+  // 點陣遮罩（身體的皮膚）：PNG 的 base64 → 能畫的圖。自己算的直接放畫布；別人存的要先解碼，好了會叫 onMaskReady 重畫
+  const maskImages = new Map();
+  let onMaskReady = null;
+  function maskSource(png) {
+    let entry = maskImages.get(png);
+    if (!entry) {
+      entry = { src: new Image(), ready: false };
+      maskImages.set(png, entry);
+      entry.src.src = `data:image/png;base64,${png}`;
+      entry.src.decode().then(() => { entry.ready = true; if (onMaskReady) onMaskReady(); }).catch(() => {});
+    }
+    return entry.ready ? entry.src : null;
+  }
+  const isRaster = (shape) => !Array.isArray(shape);
   /** 多邊形 → [實心遮罩, 羽化過的遮罩]（0～1）。toPx 把等比座標換成這塊的像素 */
   function rasterMask(shapes, include, exclude, featherPx, w, h, toPx) {
     maskCanvas.width = w; maskCanvas.height = h;
@@ -255,6 +280,11 @@
       ctx.fillStyle = color;
       for (const name of names) {
         const pts = shapes[name];
+        if (isRaster(pts)) {
+          const src = maskSource(pts.png), a = toPx(pts.box[0], pts.box[1]), b = toPx(pts.box[2], pts.box[3]);
+          if (src) { ctx.globalCompositeOperation = "lighter"; ctx.drawImage(src, a[0], a[1], b[0] - a[0], b[1] - a[1]); ctx.globalCompositeOperation = "source-over"; }
+          continue;
+        }
         ctx.beginPath();
         for (let i = 0; i < pts.length; i += 2) { const p = toPx(pts[i], pts[i + 1]); if (i) ctx.lineTo(p[0], p[1]); else ctx.moveTo(p[0], p[1]); }
         ctx.closePath(); ctx.fill();
@@ -317,7 +347,7 @@
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, pad = 0;
     for (const layer of face.layers) {
       for (const name of layer[1]) {
-        const pts = face.shapes[name];
+        const pts = isRaster(face.shapes[name]) ? [face.shapes[name].box[0], face.shapes[name].box[1], face.shapes[name].box[2], face.shapes[name].box[3]] : face.shapes[name];
         for (let i = 0; i < pts.length; i += 2) { x0 = Math.min(x0, pts[i]); x1 = Math.max(x1, pts[i]); y0 = Math.min(y0, pts[i + 1]); y1 = Math.max(y1, pts[i + 1]); }
       }
       pad = Math.max(pad, layer[3], layer[0] === "band" ? layer[5] : layer[0] === "color" ? 0 : layer[4]);
@@ -563,6 +593,100 @@
     return faces;
   }
 
+  // ---------- 身體的皮膚 ----------
+  // 人像分割模型把畫面分成背景、頭髮、身體皮膚、臉部皮膚、衣服、其他。這裡要「身體皮膚」，再依離誰近分給每張臉的主人。
+  let segmenterPromise = null;
+  function loadSegmenter(vendor) {
+    segmenterPromise = segmenterPromise || (async () => {
+      const mp = await import(`${vendor}/vision_bundle.mjs`);
+      return mp.ImageSegmenter.createFromOptions(
+        { wasmLoaderPath: `${vendor}/vision_wasm_internal.js`, wasmBinaryPath: `${vendor}/vision_wasm_internal.wasm` },
+        { baseOptions: { modelAssetPath: `${vendor}/selfie_multiclass_256x256.tflite`, delegate: "CPU" }, runningMode: "IMAGE", outputConfidenceMasks: true, outputCategoryMask: false });
+    })();
+    segmenterPromise.catch(() => { segmenterPromise = null; });
+    return segmenterPromise;
+  }
+
+  const SEG = 256, SEG_BODY = 2, SEG_FACE = 3;       // 模型的輸入邊長；身體皮膚、臉部皮膚是第幾類
+  const segCanvas = document.createElement("canvas");
+  /** 找出這張臉的主人露出來的身體皮膚，以及它和臉差多少顏色。
+   *  回傳 {shape: {box, png}, gains: [r, g, b]}（gains = 身體要乘多少才會和臉一樣）；找不到皮膚是 null。 */
+  function analyseBody(img, segmenter, face, faces) {
+    const iw = img.naturalWidth, ih = img.naturalHeight, fb = face.box;
+    const fw = (fb[2] - fb[0]) * iw, fh = (fb[3] - fb[1]) * iw, cx = (fb[0] + fb[2]) / 2 * iw, top = fb[1] * iw;
+    // 這個人大概的範圍：臉的左右各三個臉寬，往下八個臉高
+    const x0 = Math.max(0, Math.round(cx - 3.2 * fw)), x1 = Math.min(iw, Math.round(cx + 3.2 * fw));
+    const y0 = Math.max(0, Math.round(top - 0.6 * fh)), y1 = Math.min(ih, Math.round(top + 8.5 * fh));
+    const rw = x1 - x0, rh = y1 - y0, k = SEG / Math.max(rw, rh), w = Math.max(8, Math.round(rw * k)), h = Math.max(8, Math.round(rh * k));
+    segCanvas.width = segCanvas.height = SEG;
+    const ctx = segCanvas.getContext("2d", { willReadFrequently: true });
+    ctx.fillStyle = "#000"; ctx.fillRect(0, 0, SEG, SEG);
+    ctx.drawImage(img, x0, y0, rw, rh, 0, 0, w, h);          // 等比縮進去，多的留黑
+    const pixels = ctx.getImageData(0, 0, w, h).data;
+    const result = segmenter.segment(segCanvas), masks = result.confidenceMasks;
+    if (!masks || masks.length <= SEG_FACE) { result.close(); return null; }
+    const stride = masks[SEG_BODY].width, skin = Float32Array.from(masks[SEG_BODY].getAsFloat32Array()), faceSkin = Float32Array.from(masks[SEG_FACE].getAsFloat32Array());
+    result.close();
+    // 每個人的「身體軸線」：臉的中心往下七個臉高。皮膚離誰的軸線近（以臉寬為單位）就先記給誰
+    const axes = faces.map((f) => {
+      const b = f.box, cy = (b[1] + b[3]) / 2 * iw;
+      return { x: (b[0] + b[2]) / 2 * iw, y0: cy, y1: cy + 7 * (b[3] - b[1]) * iw, w: (b[2] - b[0]) * iw };
+    });
+    const me = faces.indexOf(face), oval = face.lm ? RING.oval.map((i) => [face.lm[i][0] * iw, face.lm[i][1] * iw]) : [];
+    const inOval = (X, Y) => {
+      let inside = false;
+      for (let i = 0, j = oval.length - 1; i < oval.length; j = i++) {
+        const a = oval[i], b = oval[j];
+        if ((a[1] > Y) !== (b[1] > Y) && X < (b[0] - a[0]) * (Y - a[1]) / (b[1] - a[1]) + a[0]) inside = !inside;
+      }
+      return inside;
+    };
+    const owner = new Int16Array(w * h).fill(-1), skinOfFace = [0, 0, 0];
+    let faceCount = 0;
+    for (let py = 0; py < h; py++) for (let px = 0; px < w; px++) {
+      const i = py * stride + px, o = (py * w + px) * 4, X = x0 + (px + 0.5) / k, Y = y0 + (py + 0.5) / k, mine = inOval(X, Y);
+      if (mine && faceSkin[i] + skin[i] > 0.6) { faceCount++; for (let c = 0; c < 3; c++) skinOfFace[c] += pixels[o + c]; }
+      if (mine || skin[i] < 0.3) continue;       // 自己的臉不算身體：模型有時會把臉的邊緣歸到身體皮膚
+      let best = Infinity;
+      for (let n = 0; n < axes.length; n++) {
+        const a = axes[n], d = Math.hypot(X - a.x, Y < a.y0 ? a.y0 - Y : Y > a.y1 ? Y - a.y1 : 0) / a.w;
+        if (d < best) { best = d; owner[py * w + px] = n; }
+      }
+    }
+    // 連在一起的一塊皮膚（一隻手、一條手臂）整塊歸同一個人：看這塊裡多數的點記給誰。不然一隻手會被切成兩半、調成兩種顏色
+    const out = document.createElement("canvas");
+    out.width = w; out.height = h;
+    const octx = out.getContext("2d"), data = octx.createImageData(w, h), body = [0, 0, 0], seen = new Uint8Array(w * h), votes = new Int32Array(axes.length);
+    for (let i = 3; i < data.data.length; i += 4) data.data[i] = 255;
+    let bodyCount = 0;
+    for (let start = 0; start < w * h; start++) {
+      if (owner[start] < 0 || seen[start]) continue;
+      const blob = [start];
+      seen[start] = 1; votes.fill(0);
+      for (let n = 0; n < blob.length; n++) {
+        const q = blob[n], qx = q % w;
+        votes[owner[q]]++;
+        for (const next of [qx > 0 ? q - 1 : -1, qx < w - 1 ? q + 1 : -1, q - w, q + w]) {
+          if (next >= 0 && next < w * h && owner[next] >= 0 && !seen[next]) { seen[next] = 1; blob.push(next); }
+        }
+      }
+      if (votes.indexOf(Math.max(...votes)) !== me) continue;
+      for (const q of blob) {
+        const conf = skin[Math.floor(q / w) * stride + q % w];
+        data.data[q * 4] = data.data[q * 4 + 1] = data.data[q * 4 + 2] = Math.round(conf * 255);
+        if (conf > 0.6) { bodyCount++; for (let c = 0; c < 3; c++) body[c] += pixels[q * 4 + c]; }
+      }
+    }
+    if (bodyCount < 12 || faceCount < 12) return null;
+    octx.putImageData(data, 0, 0);
+    const png = out.toDataURL("image/png").split(",")[1];
+    maskImages.set(png, { src: out, ready: true });
+    return {
+      shape: { box: [r5(x0 / iw), r5(y0 / iw), r5(x1 / iw), r5(y1 / iw)], png },
+      gains: [0, 1, 2].map((c) => clamp((skinOfFace[c] / faceCount) / Math.max(1, body[c] / bodyCount), 0.6, 1.5)),
+    };
+  }
+
   // ---------- 介面 ----------
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
   const newId = () => Array.from(crypto.getRandomValues(new Uint8Array(10)), (b) => "0123456789abcdefghijklmnopqrstuvwxyz"[b % 36]).join("");
@@ -586,6 +710,7 @@
       faces: [],            // {id, lm, box, params, prims, shapes, layers, saved, by}；saved 是伺服器上的那一份（沒修過是 null）
       source: null, painted: new Map(),      // 預覽圖的畫布（原圖的像素）；每張臉調色算好的結果
       sel: null, adding: false, original: false, busy: false, vision: null,
+      pending: 0,           // 還在分析身體皮膚的臉有幾張（算完才能存）
       head: null, parent: null, commits: [], preview: null, logOpen: null,     // logOpen：紀錄裡點開的是哪一筆
       boxes: {},            // 紀錄裡出現過的臉 → 位置
     };
@@ -675,15 +800,40 @@
       const f = selected();
       if (!f || !f.lm || S.preview) return;
       if (v) f.params[k] = v; else delete f.params[k];
-      // 調回和存檔時一樣：用存檔那份元件（可能是別人算的），畫面才會和伺服器輸出的一樣
-      if (f.saved && sameParams(f.params, f.saved.params)) fromSaved(f);
-      else { f.prims = buildPrims(f.lm, f.params); Object.assign(f, buildLook(f.lm, f.params)); }
+      rebuild(f);
       remesh(); refresh();
+      if (f.body === undefined && BODY_SLIDERS.some((name) => f.params[name])) findBody(f);
+    }
+
+    /** 照滑桿重算這張臉的元件和圖層 */
+    function rebuild(f) {
+      // 調回和存檔時一樣：用存檔那份（可能是別人算的），畫面才會和伺服器輸出的一樣
+      if (f.saved && sameParams(f.params, f.saved.params)) fromSaved(f);
+      else if (f.lm) { f.prims = buildPrims(f.lm, f.params); Object.assign(f, buildLook(f.lm, f.params, f.body || null)); }
+    }
+
+    /** 第一次動到身體的滑桿：先找出這個人露出來的皮膚。f.body：undefined 還沒找、null 正在找、false 沒有、其他是結果 */
+    async function findBody(f) {
+      f.body = null; S.pending++;
+      setStatus(t("分析身體的皮膚…（第一次要下載模型，比較久）")); refresh();
+      try {
+        const segmenter = await loadSegmenter(vendor);
+        if (!S.alive) return;
+        f.body = analyseBody(S.img, segmenter, f, S.faces) || false;
+        if (f.body) setStatus(""); else toast(t("這個人沒有找到露出的身體皮膚"));
+      } catch { f.body = undefined; toast(t("身體的皮膚分析失敗，再調一次試試")); }
+      S.pending--;
+      rebuild(f); remesh(); refresh();
     }
 
     /** 調色（圖層）：只重算設定變了的臉，再把動到的那一塊換進貼圖 */
     function repaint(items) {
       const iw = S.source.width, ih = S.source.height;
+      // 身體的圖層範圍大，和臉的分開算（各自縮到算得動的大小）。編號 0: 是身體、1: 是臉，疊的時候照這個順序
+      items = items.flatMap((it) => {
+        const layers = it.layers || [], body = layers.filter((layer) => layer[1].some((name) => isRaster(it.shapes[name])));
+        return [{ id: `0:${it.id}`, shapes: it.shapes, layers: body }, { id: `1:${it.id}`, shapes: it.shapes, layers: layers.filter((layer) => !body.includes(layer)) }];
+      });
       let dirty = null;
       const grow = (r) => { dirty = dirty ? [Math.min(dirty[0], r[0]), Math.min(dirty[1], r[1]), Math.max(dirty[2], r[2]), Math.max(dirty[3], r[3])] : r.slice(); };
       const seen = new Set();
@@ -700,7 +850,7 @@
       const [x0, y0, x1, y1] = dirty, w = x1 - x0, h = y1 - y0;
       // 這一塊先還原成原圖，再把每張臉算好的結果（只有動到的點）疊上去：臉和臉的範圍重疊也不會互相蓋掉
       const patch = S.source.getContext("2d", { willReadFrequently: true }).getImageData(x0, y0, w, h).data;
-      for (const c of S.painted.values()) {
+      for (const [, c] of [...S.painted].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
         const [cx0, cy0, cx1, cy1] = c.region, cw = cx1 - cx0;
         for (let y = Math.max(y0, cy0); y < Math.min(y1, cy1); y++) for (let x = Math.max(x0, cx0); x < Math.min(x1, cx1); x++) {
           const i = (y - cy0) * cw + (x - cx0);
@@ -763,7 +913,7 @@
     /** 畫面上所有會變的東西都在這裡更新 */
     function refresh() {
       const f = selected(), dirty = dirtyFaces(), locked = !!S.preview;
-      save.disabled = S.busy || locked || !dirty.length;
+      save.disabled = S.busy || locked || !dirty.length || S.pending > 0;
       save.textContent = dirty.length ? t("儲存（{n} 張臉）", { n: dirty.length }) : t("儲存");
       tabLog.textContent = S.commits.length ? t("紀錄（{n}）", { n: S.commits.length }) : t("紀錄");
       // 臉的按鈕
@@ -1100,9 +1250,11 @@
     reset.onclick = () => { const f = selected(); if (!f) return; Object.assign(f, blank()); remesh(); refresh(); };
     nameIn.addEventListener("input", () => nameIn.classList.remove("need"));
 
+    onMaskReady = () => { if (S.alive) { S.painted.clear(); remesh(); } };      // 別人存的身體遮罩解碼好了：重畫
+
     function close() {
       if (dirtyFaces().length && !confirm(t("還沒儲存的修改會不見，確定離開？"))) return;
-      S.alive = false; current = null;
+      S.alive = false; current = null; onMaskReady = null;
       clearInterval(pollTimer);
       observer.disconnect();
       document.removeEventListener("keydown", onKey, true);

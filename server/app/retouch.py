@@ -12,7 +12,9 @@
 
 皮膚與膚色（磨皮、去瑕疵、美白…）是另一種東西：不搬動內容，只改顏色。做法一樣是返圖頁把滑桿換成幾種通用的「圖層」，
 伺服器只認圖層，不管滑桿的意思（返圖頁 retouch.js 的 paintCrop() 是同一套公式）。圖層先做，變形後做，所以遮罩用的是原圖上的位置。
-  shapes：{名字: [x0, y0, x1, y1, …]}，臉上各部位的多邊形（輪廓、眼、眉、唇…），圖層用名字指定範圍
+  shapes：{名字: [x0, y0, x1, y1, …]}，臉上各部位的多邊形（輪廓、眼、眉、唇…），圖層用名字指定範圍。
+          身體的皮膚沒辦法用多邊形描，用點陣遮罩：{名字: {"box": [x0, y0, x1, y1], "png": 灰階 PNG 的 base64}}，
+          是返圖頁用人像分割模型算出來的，最大 256 × 256，貼到 box 的位置。只有 color 圖層能用
   每個圖層的前三項都是 [要的形狀], [挖掉的形狀], 邊緣羽化；接著：
   ["band", …, s1, s2, gain, lo, hi]                 去掉 s1～s2 之間粗細的明暗不均（磨皮、去瑕疵）。和周圍的亮度差在 lo 以下的全去，
                                                      到 hi 以上的不動：差很多的是五官的輪廓，不是瑕疵
@@ -25,6 +27,9 @@
 狀態：{臉的 id: 臉}。params 只給介面顯示與比較用，輸出只看 prims、shapes、layers。
 """
 
+import base64
+import binascii
+import io
 import math
 import os
 import re
@@ -39,6 +44,8 @@ MAX_SHAPES = 24
 MAX_POINTS = 64     # 一個形狀最多幾個點
 MAX_LAYERS = 24
 MAX_SIGMA = 0.1
+MAX_RASTER = 256        # 點陣遮罩的邊長上限
+MAX_RASTER_TEXT = 120000
 MAX_MOVE = 0.5        # 推的距離最多是半徑的一半：再多內容會摺疊
 MAX_SCALE = 0.5
 MAX_RADIUS = 0.5
@@ -121,7 +128,12 @@ def clean_face(raw, aspect: float):
     shapes = {}
     for name in sorted(raw_shapes):
         pts = raw_shapes[name]
-        if not isinstance(name, str) or not PARAM_RE.match(name) or not isinstance(pts, list) or len(pts) % 2 or not 6 <= len(pts) <= MAX_POINTS * 2:
+        if not isinstance(name, str) or not PARAM_RE.match(name):
+            raise Invalid("shape")
+        if isinstance(pts, dict):
+            shapes[name] = _clean_raster(pts, (x0, y0, x1, y1), aspect)
+            continue
+        if not isinstance(pts, list) or len(pts) % 2 or not 6 <= len(pts) <= MAX_POINTS * 2:
             raise Invalid("shape")
         flat = []
         for i in range(0, len(pts), 2):
@@ -146,6 +158,27 @@ def clean_face(raw, aspect: float):
     return face
 
 
+def _clean_raster(raw: dict, face_box, aspect: float) -> dict:
+    """點陣遮罩（身體的皮膚）。範圍可以比臉大很多，但還是要在這個人附近：左右各四個臉寬、往下十個臉高。"""
+    x0, y0, x1, y1 = face_box
+    bw, bh = x1 - x0, y1 - y0
+    box, png = raw.get("box"), raw.get("png")
+    if not isinstance(box, list) or len(box) != 4 or not isinstance(png, str) or not 0 < len(png) <= MAX_RASTER_TEXT:
+        raise Invalid("raster")
+    rx0, rx1 = _num(box[0], max(-0.5, x0 - 4 * bw), min(1.5, x1 + 4 * bw)), _num(box[2], max(-0.5, x0 - 4 * bw), min(1.5, x1 + 4 * bw))
+    ry0, ry1 = _num(box[1], max(-0.5, y0 - 1.5 * bh), min(aspect + 0.5, y1 + 10 * bh)), _num(box[3], max(-0.5, y0 - 1.5 * bh), min(aspect + 0.5, y1 + 10 * bh))
+    if rx1 - rx0 < 0.002 or ry1 - ry0 < 0.002:
+        raise Invalid("raster")
+    try:
+        with Image.open(io.BytesIO(base64.b64decode(png, validate=True))) as im:
+            if im.format != "PNG" or max(im.size) > MAX_RASTER:      # 先看檔頭的尺寸，太大的不解開
+                raise Invalid("raster")
+            im.convert("L")
+    except (binascii.Error, OSError, ValueError, SyntaxError) as e:
+        raise Invalid("raster") from e
+    return {"box": [rx0, ry0, rx1, ry1], "png": png}
+
+
 def _names(value, shapes: dict, required: bool):
     if not isinstance(value, list) or len(value) > 8 or (required and not value) or any(not isinstance(n, str) or n not in shapes for n in value):
         raise Invalid("layer shapes")
@@ -165,6 +198,8 @@ def _clean_layer(layer, shapes: dict):
         raise Invalid("layer")
     kind = layer[0]
     head = [kind, _names(layer[1], shapes, True), _names(layer[2], shapes, False), _num(layer[3], 0, MAX_SIGMA)]
+    if any(isinstance(shapes[n], dict) for n in head[2]) or (kind != "color" and any(isinstance(shapes[n], dict) for n in head[1])):
+        raise Invalid("raster layer")       # 點陣遮罩的範圍大，只給便宜的調色用，也不能拿來挖洞
     if kind == "band":
         s1, s2 = _num(layer[4], 0, MAX_SIGMA), _num(layer[5], 1e-5, MAX_SIGMA)
         gain, lo, hi = _num(layer[6], 0, 1), _num(layer[7], 0, 1), _num(layer[8], 0.004, 1)
@@ -382,11 +417,17 @@ def _to_l(a, value):
 def _mask(size, origin, shapes: dict, include, exclude, feather_px: float, width: int) -> Image.Image:
     """多邊形 → 遮罩（要的填白、挖掉的填黑，再把邊緣糊開）"""
     mask = Image.new("L", size, 0)
-    draw = ImageDraw.Draw(mask)
     for names, fill in ((include, 255), (exclude, 0)):
         for name in names:
             pts = shapes[name]
-            draw.polygon([(pts[i] * width - origin[0], pts[i + 1] * width - origin[1]) for i in range(0, len(pts), 2)], fill=fill)
+            if isinstance(pts, dict):       # 點陣遮罩：放大到 box 的大小，和已經畫的取聯集
+                bx0, by0, bx1, by1 = (round(v * width) for v in pts["box"])
+                tile = Image.open(io.BytesIO(base64.b64decode(pts["png"]))).convert("L").resize((max(1, bx1 - bx0), max(1, by1 - by0)), Image.Resampling.BILINEAR)
+                layer = Image.new("L", size, 0)
+                layer.paste(tile, (bx0 - origin[0], by0 - origin[1]))
+                mask = ImageChops.lighter(mask, layer)
+            else:
+                ImageDraw.Draw(mask).polygon([(pts[i] * width - origin[0], pts[i + 1] * width - origin[1]) for i in range(0, len(pts), 2)], fill=fill)
     return mask, _blur(mask, feather_px)
 
 
@@ -445,8 +486,13 @@ def paint_region(face: dict, width: int, height: int):
     xs, ys, pad = [], [], 0.0
     for layer in layers:
         for name in layer[1]:
-            xs += shapes[name][0::2]
-            ys += shapes[name][1::2]
+            if isinstance(shapes[name], dict):
+                box = shapes[name]["box"]
+                xs += [box[0], box[2]]
+                ys += [box[1], box[3]]
+            else:
+                xs += shapes[name][0::2]
+                ys += shapes[name][1::2]
         reach = max(layer[5] if layer[0] == "band" else layer[4] if layer[0] in ("even", "shine") else 0, layer[3])
         pad = max(pad, reach)
     pad = pad * 3 * width + 2
@@ -477,13 +523,18 @@ def paint_crop(crop: Image.Image, face: dict, origin, width: int):
 
 
 def paint(im: Image.Image, state: dict) -> Image.Image:
-    """做所有臉的圖層（直接改 im）。每張臉都從沒動過的原圖取，再只把動到的地方貼回去，所以和臉的先後順序無關。"""
+    """做所有臉的圖層（直接改 im）。每一份都從沒動過的原圖取，再只把動到的地方貼回去。
+    身體的圖層（用點陣遮罩的）範圍大，和臉的分開算；先貼所有人的身體，再貼所有人的臉（返圖頁的預覽也是這個順序）。"""
     width, height = im.size
     jobs = []
-    for fid in sorted(state):
-        region = paint_region(state[fid], width, height)
-        if region:
-            jobs.append((region, im.crop(region), state[fid]))
+    for body in (True, False):
+        for fid in sorted(state):
+            face, shapes = state[fid], state[fid].get("shapes") or {}
+            layers = [layer for layer in face.get("layers") or [] if any(isinstance(shapes[n], dict) for n in layer[1]) == body]
+            part = dict(face, layers=layers)
+            region = paint_region(part, width, height)
+            if region:
+                jobs.append((region, im.crop(region), part))
     for region, crop, face in jobs:
         gray = crop.mode != "RGB"
         out, touched = paint_crop(crop.convert("RGB") if gray else crop, face, region[:2], width)
