@@ -251,7 +251,7 @@ CREATE TABLE IF NOT EXISTS retouch_commits (   -- 修容紀錄：存一次一筆
     kind TEXT NOT NULL DEFAULT 'edit',   -- edit（修）/ restore（還原到舊的一筆）
     ref TEXT,                        -- restore：還原到哪一筆（NULL = 原圖）
     changed TEXT NOT NULL DEFAULT '[]',  -- 這筆動了哪幾張臉
-    summary TEXT NOT NULL DEFAULT '{}',  -- {臉 id: 滑桿值}：列紀錄時不用把整個 state 讀出來
+    summary TEXT NOT NULL DEFAULT '{}',  -- {"p": {臉 id: 滑桿值}, "b": {臉 id: 位置}}：列紀錄時不用把整個 state 讀出來
     state TEXT NOT NULL,             -- {臉 id: 臉}，格式見 retouch.py
     created_at REAL NOT NULL
 );
@@ -1891,8 +1891,12 @@ def retouch_json(con, album_id: int, photo_id: str) -> dict:
     head, state = retouch_head(con, album_id, photo_id)
     rows = con.execute("SELECT id, parent, seq, author, message, kind, ref, changed, summary, created_at FROM retouch_commits "
                        "WHERE album_id=? AND photo_id=? ORDER BY seq DESC", (album_id, photo_id)).fetchall()
-    commits = [{"id": r["id"], "parent": r["parent"], "seq": r["seq"], "author": r["author"], "message": r["message"], "kind": r["kind"],
-                "ref": r["ref"], "changed": json.loads(r["changed"]), "params": json.loads(r["summary"]), "at": r["created_at"]} for r in rows]
+    commits = []
+    for r in rows:
+        summary = json.loads(r["summary"])
+        # boxes：這一筆裡每張臉的位置。臉後來被重設、不在最新狀態裡了，返圖頁還是認得出紀錄講的是哪一張
+        commits.append({"id": r["id"], "parent": r["parent"], "seq": r["seq"], "author": r["author"], "message": r["message"], "kind": r["kind"],
+                        "ref": r["ref"], "changed": json.loads(r["changed"]), "params": summary.get("p", {}), "boxes": summary.get("b", {}), "at": r["created_at"]})
     return {"head": head, "state": state, "commits": commits}
 
 
@@ -1901,7 +1905,8 @@ def retouch_add(con, album_id: int, photo_id: str, parent, author: str, message:
     seq = con.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM retouch_commits WHERE album_id=? AND photo_id=?", (album_id, photo_id)).fetchone()[0]
     body = json.dumps(state, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     commit = hashlib.sha256(f"{album_id}\n{photo_id}\n{parent}\n{author}\n{message}\n{now}\n{body}".encode()).hexdigest()[:12]
-    summary = json.dumps({fid: f["params"] for fid, f in state.items()}, ensure_ascii=False, separators=(",", ":"))
+    summary = json.dumps({"p": {fid: f["params"] for fid, f in state.items()}, "b": {fid: f["box"] for fid, f in state.items()}},
+                         ensure_ascii=False, separators=(",", ":"))
     con.execute("INSERT INTO retouch_commits (id, album_id, photo_id, parent, seq, author, message, kind, ref, changed, summary, state, created_at) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (commit, album_id, photo_id, parent, seq, author, message, kind, ref, json.dumps(changed), summary, body, now))

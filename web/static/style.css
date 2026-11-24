@@ -106,15 +106,22 @@ body.rt-open { overflow: hidden; }
 .rt-who { display: flex; flex-direction: column; gap: 8px; margin-top: auto; padding-top: 12px; border-top: 1px solid var(--line); }
 .rt-who input { width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--card); color: var(--ink); font: inherit; font-size: 14px; }
 .rt-who input.need { border-color: #FF5C5C; }
-.rt-commit { padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
-.rt-commit.head { border-color: var(--brand); }
-.rt-commit.viewing { border-color: var(--star); }
-.rt-commit-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-.rt-commit-head span, .rt-commit-head code { color: var(--ink-soft); font-size: 12px; }
-.rt-commit-head em { margin-left: auto; padding: 1px 7px; border-radius: 999px; background: var(--brand); color: #fff; font-size: 11px; font-style: normal; }
-.rt-commit p { margin: 6px 0 0; color: var(--chip-ink); font-size: 13px; line-height: 1.5; }
-.rt-commit p.rt-commit-diff { color: var(--ink-soft); }
-.rt-commit-actions { display: flex; gap: 8px; margin-top: 10px; }
+.rt-line { position: relative; padding-left: 22px; }
+.rt-line::before { content: ""; position: absolute; left: 5px; top: 10px; bottom: 9px; width: 1px; background: #3A3A42; }
+.rt-node { position: relative; padding-bottom: 16px; font-size: 13px; line-height: 1.55; }
+.rt-node:last-child { padding-bottom: 0; }
+.rt-dot { position: absolute; left: -21px; top: 6px; width: 9px; height: 9px; border: 1px solid var(--ink-soft); border-radius: 50%; background: var(--bg); box-sizing: border-box; }
+.rt-node.head .rt-dot { border-color: var(--ink); background: var(--ink); }
+.rt-node.viewing .rt-dot { border-color: var(--star); background: var(--star); }
+.rt-node.root .rt-dot { left: -20px; top: 7px; width: 7px; height: 7px; border: 0; border-radius: 0; background: var(--ink-soft); }
+.rt-node-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; width: 100%; padding: 0; border: 0; background: none; color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
+.rt-node-top:disabled { cursor: default; }
+.rt-node-who span { margin-left: 8px; color: var(--ink-soft); }
+.rt-node-top code { flex: none; color: var(--ink-soft); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.rt-node p { margin: 0; color: var(--ink-soft); }
+.rt-node-actions { display: flex; gap: 18px; margin-top: 6px; }
+.rt-link { padding: 0; border: 0; background: none; color: var(--chip-ink); font: inherit; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.rt-link:disabled { opacity: 0.4; cursor: default; }
 .rt-dialog { position: absolute; inset: 0; z-index: 2; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(0,0,0,0.6); }
 .rt-dialog[hidden] { display: none; }
 .rt-dialog-box { max-width: 380px; padding: 20px; border-radius: 16px; background: var(--card); border: 1px solid var(--line); }

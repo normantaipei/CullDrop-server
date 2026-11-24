@@ -398,6 +398,7 @@ chk "$(curl -s $B/api/share/$RK | j 'd["retouch"]["vendor"].startswith("/vendor/
 chk "$(curl -s $RU | j '(d["head"], d["state"], d["commits"])')" "(None, {}, [])" "no history yet"
 R=$(rt "{\"parent\":null,\"author\":\"阿明\",\"message\":\"第一筆\",\"faces\":{\"faceaaaa\":$FA}}"); C1=$(echo $R | j 'd["head"]')
 chk "$(echo $R | j '(len(d["commits"]), d["state"]["faceaaaa"]["by"], d["commits"][0]["changed"], d["commits"][0]["message"])')" "(1, '阿明', ['faceaaaa'], '第一筆')" "first commit"
+chk "$(echo $R | j '(d["commits"][0]["params"], d["commits"][0]["boxes"])')" "({'faceaaaa': {'slim': 40.0}}, {'faceaaaa': [0.2, 0.2, 0.4, 0.4]})" "commit list carries each face's sliders and position"
 chk "$(curl -s $B/api/share/$RK | j 'd["photos"][0]["retouch"]')" "$C1" "gallery points at the commit"
 chk "$(curl -s "$RU?head=$C1" | j 'd')" "{'head': '$C1', 'unchanged': True}" "polling with the current head is cheap"
 # 小美開始改的時候還沒人存過（parent = null），她改的是另一張臉 → 自動接在阿明後面

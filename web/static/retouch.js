@@ -542,7 +542,8 @@
       faces: [],            // {id, lm, box, params, prims, shapes, layers, saved, by}；saved 是伺服器上的那一份（沒修過是 null）
       source: null, painted: new Map(),      // 預覽圖的畫布（原圖的像素）；每張臉調色算好的結果
       sel: null, adding: false, original: false, busy: false, vision: null,
-      head: null, parent: null, commits: [], preview: null,
+      head: null, parent: null, commits: [], preview: null, logOpen: null,     // logOpen：紀錄裡點開的是哪一筆
+      boxes: {},            // 紀錄裡出現過的臉 → 位置
     };
     current = S;
 
@@ -615,7 +616,13 @@
     const fromSaved = (f) => { const r = f.saved; Object.assign(f, r ? { params: { ...r.params }, prims: r.prims, shapes: r.shapes || {}, layers: r.layers || [] } : blank()); };
     const dirtyFaces = () => S.faces.filter(isDirty);
     const ordered = () => [...S.faces].sort((a, b) => (a.box[0] + a.box[2]) - (b.box[0] + b.box[2]));
-    const faceLabel = (id) => { const i = ordered().findIndex((f) => f.id === id); return i < 0 ? t("臉 ?") : t("臉 {n}", { n: i + 1 }); };
+    /** 「臉 N」：照片上由左到右數。紀錄裡的臉可能已經被重設、id 對不上了，就用它當時的位置找 */
+    const faceLabel = (id) => {
+      const list = ordered();
+      let i = list.findIndex((f) => f.id === id);
+      if (i < 0 && S.boxes[id]) i = list.findIndex((f) => iou(f.box, S.boxes[id]) > 0.4);
+      return i < 0 ? t("臉 ?") : t("臉 {n}", { n: i + 1 });
+    };
     const setStatus = (text) => { status.textContent = text || ""; };
     let toastTimer;
     function toast(text) { setStatus(text); clearTimeout(toastTimer); toastTimer = setTimeout(() => { if (status.textContent === text) setStatus(""); }, 4000); }
@@ -761,7 +768,7 @@
         const use = el("button", "rt-btn rt-primary", t("還原到這版")), leave = el("button", "rt-btn", t("回到最新"));
         use.disabled = S.busy || S.preview.id === S.head;
         use.onclick = () => restore(S.preview.id);
-        leave.onclick = () => { S.preview = null; remesh(); refresh(); renderLog(); };
+        leave.onclick = leavePreview;
         banner.append(use, leave);
       }
       draw();
@@ -788,42 +795,54 @@
       const parent = S.commits.find((x) => x.id === c.parent), before = parent ? parent.params : {}, lines = [];
       for (const fid of c.changed) {
         const now = c.params[fid], old = before[fid] || {};
-        if (!now) { lines.push(t("{face}：{what}", { face: faceLabel(fid), what: t("重設") })); continue; }
+        if (!now) { lines.push(t("{face}　{what}", { face: faceLabel(fid), what: t("重設") })); continue; }
         const parts = SLIDERS.filter(([k]) => (now[k] || 0) !== (old[k] || 0)).map(([k, label]) => `${t(label)} ${signed(now[k] || 0)}`);
-        lines.push(t("{face}：{what}", { face: faceLabel(fid), what: parts.join(t("、")) || t("微調") }));
+        lines.push(t("{face}　{what}", { face: faceLabel(fid), what: parts.join(t("、")) || t("微調") }));
       }
       return lines;
     }
+    /** 紀錄：一條時間軸，最新的在上面，最下面是原圖。點一筆才出現能對它做的事 */
     function renderLog() {
       log.textContent = "";
       if (!S.commits.length) { log.append(el("p", "rt-hint", t("還沒有人修過這張。存一次就會多一筆紀錄，隨時可以還原到任何一筆。"))); return; }
-      const row = (c) => {
-        const item = el("div", "rt-commit" + (c && c.id === S.head ? " head" : "") + (S.preview && S.preview.id === (c ? c.id : null) ? " viewing" : ""));
-        const headLine = el("div", "rt-commit-head");
+      const line = el("div", "rt-line");
+      const node = (c) => {
+        const id = c ? c.id : null, key = id || "root", isHead = id === S.head, viewing = !!S.preview && S.preview.id === id;
+        const item = el("div", "rt-node" + (isHead ? " head" : "") + (viewing ? " viewing" : "") + (c ? "" : " root"));
+        const top = el("button", "rt-node-top");
         if (c) {
-          headLine.append(el("b", "", c.author), el("span", "", timeAgo(c.at)), el("code", "", c.id.slice(0, 7)));
-          if (c.id === S.head) headLine.append(el("em", "", t("目前")));
-          item.append(headLine);
+          const who = el("span", "rt-node-who", c.author);
+          who.append(el("span", "", isHead ? t("{time} · 目前", { time: timeAgo(c.at) }) : timeAgo(c.at)));
+          top.append(who, el("code", "", c.id.slice(0, 7)));
+        } else top.append(el("span", "rt-node-who", t("原圖")));
+        item.append(el("i", "rt-dot"), top);
+        if (c) {
           if (c.kind === "restore") item.append(el("p", "", c.ref ? t("還原到 {id}", { id: c.ref.slice(0, 7) }) : t("還原成原圖")));
-          if (c.message) item.append(el("p", "rt-commit-msg", c.message));
-          for (const line of describe(c)) item.append(el("p", "rt-commit-diff", line));
-        } else {
-          headLine.append(el("b", "", t("原圖")));
-          item.append(headLine);
+          for (const text of describe(c)) item.append(el("p", "", text));
+          if (c.message) item.append(el("p", "", t("「{text}」", { text: c.message })));
         }
-        const id = c ? c.id : null, actions = el("div", "rt-commit-actions");
-        const look = el("button", "rt-btn", t("看這版")), use = el("button", "rt-btn", c ? t("還原到這版") : t("還原成原圖"));
-        look.onclick = () => preview(id);
-        use.disabled = S.busy || id === S.head || (!c && !S.faces.some((f) => f.saved));
-        use.onclick = () => restore(id);
-        if (id !== S.head) actions.append(look);
-        actions.append(use);
-        if (id !== S.head) item.append(actions);
+        if (isHead) { top.disabled = true; return item; }
+        top.onclick = () => { S.logOpen = S.logOpen === key ? null : key; renderLog(); };
+        if (S.logOpen === key || viewing) {
+          const actions = el("div", "rt-node-actions"), look = el("button", "rt-link", viewing ? t("回到最新") : t("看這版"));
+          look.onclick = () => (viewing ? leavePreview() : preview(id));
+          actions.append(look);
+          if (c || S.faces.some((f) => f.saved)) {       // 已經是原圖就不用再還原成原圖
+            const use = el("button", "rt-link", c ? t("還原到這裡") : t("還原成原圖"));
+            use.disabled = S.busy;
+            use.onclick = () => restore(id);
+            actions.append(use);
+          }
+          item.append(actions);
+        }
         return item;
       };
-      for (const c of S.commits) log.append(row(c));
-      log.append(row(null));
+      for (const c of S.commits) line.append(node(c));
+      line.append(node(null));
+      log.append(line);
     }
+
+    function leavePreview() { S.preview = null; remesh(); refresh(); renderLog(); }
 
     async function preview(id) {
       try {
@@ -847,6 +866,7 @@
     function applyRemote(data, keepMine) {
       const mine = keepMine ? dirtyFaces() : [];
       S.head = data.head; S.commits = data.commits || [];
+      for (const c of S.commits) Object.assign(S.boxes, c.boxes);
       const remote = { ...data.state };
       for (const f of S.faces) {
         // 別人第一次修這張臉時取的 id 和我的不一樣：位置重疊就是同一張，改用伺服器上的 id
@@ -1049,7 +1069,7 @@
     back.onclick = close;
     const onKey = (e) => {
       e.stopPropagation();          // 編輯器開著時，底下燈箱的方向鍵、Esc 不要動
-      if (e.key === "Escape" && !e.target.closest("input")) { if (!dialog.hidden) return; if (S.preview) { S.preview = null; remesh(); refresh(); renderLog(); } else close(); }
+      if (e.key === "Escape" && !e.target.closest("input")) { if (!dialog.hidden) return; if (S.preview) leavePreview(); else close(); }
     };
     document.addEventListener("keydown", onKey, true);
     const observer = new ResizeObserver(() => { const f = selected(); if (f) focusFace(f); else fit(); });
