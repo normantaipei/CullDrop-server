@@ -4,11 +4,16 @@
 // 座標：照片寬 = 1 的等比座標（x ∈ [0, 1]、y ∈ [0, 高 / 寬]）。元件格式與公式見 server/app/retouch.py，兩邊要一起改。
 (() => {
   // [組名, [[滑桿名, 標籤, 最小值], …]]；正的方向就是標籤說的方向，最小值 0 的只能往一邊調。
-  // 臉型、五官形狀是搬動內容（buildPrims）；皮膚、膚色、妝感是改顏色（buildLook）
+  // 臉型到嘴巴這幾組是搬動內容（buildPrims）；皮膚、膚色、妝感是改顏色（buildLook）
   const GROUPS = [
-    ["臉型", [["slim", "瘦臉", -100], ["cheek", "收顴骨", -100], ["jaw", "收下顎", -100], ["chin", "下巴長度", -100], ["forehead", "額頭高度", -100], ["head", "頭部大小", -100]]],
-    ["五官形狀", [["eye", "眼睛大小", -100], ["eyeGap", "眼距", -100], ["nose", "瘦鼻翼", -100], ["noseLen", "鼻子長度", -100],
-      ["mouth", "嘴巴大小", -100], ["mouthW", "嘴巴寬度", -100], ["philtrum", "人中長度", -100], ["smile", "嘴角上揚", -100]]],
+    ["臉型", [["slim", "瘦臉", -100], ["vface", "V 臉", -100], ["cheek", "收顴骨", -100], ["jaw", "收下顎", -100], ["chin", "下巴長度", -100],
+      ["chinW", "下巴寬度", -100], ["temple", "太陽穴", -100], ["forehead", "額頭高度", -100]]],
+    ["頭與脖子", [["head", "頭部大小", -100], ["neck", "瘦脖子", -100]]],
+    ["眼睛與眉毛", [["eye", "眼睛大小", -100], ["eyeH", "眼睛高度", -100], ["eyeW", "眼睛寬度", -100], ["eyeGap", "眼距", -100],
+      ["eyePos", "眼睛位置", -100], ["eyeTilt", "眼尾上揚", -100], ["browH", "眉毛高度", -100]]],
+    ["鼻子", [["noseSize", "鼻子大小", -100], ["nose", "瘦鼻翼", -100], ["bridge", "瘦鼻樑", -100], ["noseLen", "鼻子長度", -100], ["noseTip", "鼻尖上提", -100]]],
+    ["嘴巴", [["mouth", "嘴巴大小", -100], ["mouthW", "嘴巴寬度", -100], ["lipUp", "上唇厚度", -100], ["lipLow", "下唇厚度", -100],
+      ["philtrum", "人中長度", -100], ["smile", "嘴角上揚", -100]]],
     ["皮膚", [["smooth", "磨皮", 0], ["blemish", "去瑕疵", 0], ["even", "均勻膚色", 0], ["shine", "去油光", 0], ["darkCircle", "淡化黑眼圈", 0], ["fold", "淡化法令紋", 0]]],
     ["膚色", [["whiten", "美白", -100], ["warm", "冷暖", -100], ["rosy", "紅潤", -100]]],
     ["妝感", [["eyeBright", "亮眼", 0], ["teeth", "美牙", 0], ["lip", "唇色", -100], ["blush", "腮紅", 0]]],
@@ -49,26 +54,65 @@
     move(P(152), 0.30 * s, v, amount("chin") * 0.07 * s);
     move(P(10), 0.34 * s, [-v[0], -v[1]], amount("forehead") * 0.06 * s);
     // 頭部大小：以臉的中心整個縮放，範圍蓋到頭髮
-    const top = P(10), chin = P(152), tall = Math.max(dist(top, chin), s);
+    const top = P(10), chin = P(152), tall = Math.max(dist(top, chin), s), up = [-v[0], -v[1]];
+    // V 臉：下顎到下巴兩側往內、略往上收，越靠近下巴收越多，下巴尖不動
+    for (const [i, w] of [[136, 0.5], [150, 0.9], [149, 1], [176, 0.7], [365, 0.5], [379, 0.9], [378, 1], [400, 0.7]]) {
+      const d = inward(P(i));
+      move(P(i), 0.20 * s, unit([d[0] + up[0] * 0.25, d[1] + up[1] * 0.25]), amount("vface") * 0.032 * s * w);
+    }
+    for (const i of [148, 176, 377, 400]) move(P(i), 0.16 * s, outward(P(i)), amount("chinW") * 0.03 * s);
+    for (const i of [127, 162, 356, 389]) move(P(i), 0.22 * s, outward(P(i)), amount("temple") * 0.025 * s);
+    // 脖子：臉部模型沒有脖子的點，位置用下巴往下、臉寬的比例估。頭歪的時候脖子還是大致垂直，所以方向取臉的縱向和畫面正下方的中間
+    const down = v[1] > 0 ? unit([v[0], v[1] + 1]) : v;
+    for (const depth of [0.2, 0.4]) for (const side of [-1, 1]) {
+      move([chin[0] + down[0] * depth * tall + u[0] * side * 0.34 * s, chin[1] + down[1] * depth * tall + u[1] * side * 0.34 * s],
+        0.30 * s, [-u[0] * side, -u[1] * side], amount("neck") * 0.035 * s);
+    }
     if (amount("head")) out.push(["s", r6((top[0] + chin[0]) / 2), r6((top[1] + chin[1]) / 2), r6(u[0]), r6(u[1]), r6(0.95 * tall), r6(0.95 * tall), r6(amount("head") * 0.12)]);
     // 眼睛：[瞳孔, 外眼角, 內眼角]
     for (const [iris, outer, inner] of [[468, 33, 133], [473, 263, 362]]) {
       const c = lm[iris] || mid(P(outer), P(inner)), w = dist(P(outer), P(inner));
       scale(c, 1.0 * w, 0.8 * w, amount("eye") * 0.22);
       move(c, 1.1 * w, outward(c), amount("eyeGap") * 0.10 * w);
+      move(c, 1.2 * w, up, amount("eyePos") * 0.08 * w);
+    }
+    // 眼睛的細項：[外眼角, 內眼角, 上眼皮, 下眼皮, 眉毛中段]
+    for (const [outer, inner, upper, lower, brow] of [[33, 133, 159, 145, 105], [263, 362, 386, 374, 334]]) {
+      const w = dist(P(outer), P(inner));
+      move(P(upper), 0.5 * w, up, amount("eyeH") * 0.07 * w);
+      move(P(lower), 0.5 * w, v, amount("eyeH") * 0.05 * w);
+      move(P(outer), 0.45 * w, outward(P(outer)), amount("eyeW") * 0.08 * w);
+      move(P(inner), 0.40 * w, inward(P(inner)), amount("eyeW") * 0.04 * w);
+      move(P(outer), 0.5 * w, up, amount("eyeTilt") * 0.08 * w);
+      move(P(brow), 0.9 * w, up, amount("browH") * 0.08 * w);
     }
     // 鼻翼
     const noseW = dist(P(64), P(294));
     for (const i of [64, 294]) move(P(i), 0.6 * noseW, inward(P(i)), amount("nose") * 0.14 * noseW);
     move(P(2), 0.8 * noseW, v, amount("noseLen") * 0.12 * noseW);
+    scale(P(4), 0.95 * noseW, 1.1 * noseW, amount("noseSize") * 0.18);
+    for (const side of [-1, 1]) move([P(197)[0] + u[0] * side * 0.22 * noseW, P(197)[1] + u[1] * side * 0.22 * noseW], 0.4 * noseW, [-u[0] * side, -u[1] * side], amount("bridge") * 0.06 * noseW);
+    move(P(1), 0.45 * noseW, up, amount("noseTip") * 0.08 * noseW);
     // 嘴
     const mouthW = dist(P(61), P(291));
     scale(mid(P(61), P(291)), 0.85 * mouthW, 0.6 * mouthW, amount("mouth") * 0.20);
     move(mid(P(61), P(291)), 0.9 * mouthW, v, amount("philtrum") * 0.08 * mouthW);
+    move(P(0), 0.32 * mouthW, up, amount("lipUp") * 0.06 * mouthW);
+    move(P(17), 0.35 * mouthW, v, amount("lipLow") * 0.07 * mouthW);
     for (const i of [61, 291]) move(P(i), 0.45 * mouthW, outward(P(i)), amount("mouthW") * 0.09 * mouthW);
     for (const i of [61, 291]) {
       const o = outward(P(i));
       move(P(i), 0.42 * mouthW, unit([o[0] * 0.35 - v[0] * 0.9, o[1] * 0.35 - v[1] * 0.9]), amount("smile") * 0.10 * mouthW);
+    }
+    // 伺服器只收臉附近的元件（位置、半徑、推的距離都有上限）；這裡先收進範圍，免得臉的比例特殊時整筆存不進去
+    const bb = boxOf(lm), bw = bb[2] - bb[0], bh = bb[3] - bb[1], reach = Math.min(0.5, Math.max(bw, bh));
+    for (const p of out) {
+      p[1] = r6(clamp(p[1], bb[0] - 0.48 * bw, bb[2] + 0.48 * bw)); p[2] = r6(clamp(p[2], bb[1] - 0.48 * bh, bb[3] + 0.48 * bh));
+      if (p[0] === "m") {
+        p[3] = r6(Math.min(p[3], reach));
+        const len = Math.hypot(p[4], p[5]), max = 0.49 * p[3];
+        if (len > max) { p[4] = r6(p[4] * max / len); p[5] = r6(p[5] * max / len); }
+      } else { p[5] = r6(Math.min(p[5], reach)); p[6] = r6(Math.min(p[6], reach)); }
     }
     return out;
   }
@@ -589,7 +633,7 @@
     const sliderEls = {}, groupEls = [];
     GROUPS.forEach(([group, items], index) => {
       const box = el("details", "rt-group"), head = el("summary"), count = el("em");
-      box.open = index === 0 || window.innerWidth > 760;      // 手機的面板矮，只先打開第一組
+      box.open = index === 0 || (index === 1 && window.innerWidth > 760);      // 組多，只先打開最前面的；有調過的組會標數字
       head.append(el("span", "", t(group)), count);
       box.append(head);
       for (const [k, label, min] of items) {
