@@ -368,8 +368,24 @@ assert ImageChops.difference(flat, im.crop(box)).getbbox() is None, "identity me
 moved = retouch.warp(im.copy(), {"f": {"prims": [["m", 0.5, 400 / 1200, 0.1, 0.025, 0.0]]}})
 x0, y0, x1, y1 = ImageChops.difference(moved, im).getbbox()      # 圓心 (600, 400)、半徑 120px，格子邊緣差 1～2px
 assert 478 <= x0 <= 500 and 278 <= y0 <= 300 and 700 <= x1 <= 722 and 500 <= y1 <= 522, (x0, y0, x1, y1)
+# 圖層（磨皮、調色…）：只動形狀裡面，沒用到的形狀不存，不合規格的擋掉
+square = [0.4, 0.25, 0.6, 0.25, 0.6, 0.45, 0.4, 0.45]
+raw = {"box": [0.35, 0.2, 0.65, 0.5], "shapes": {"skin": square, "unused": square},
+       "layers": [["band", ["skin"], [], 0.004, 0.002, 0.02, 0.9, 0.5, 1], ["color", ["skin"], [], 0.004, 0.8, [1.05, 1, 0.95], [0, 0, 0], 0.9, 0, 0],
+                  ["even", ["skin"], [], 0.004, 0.03, 0.5], ["shine", ["skin"], [], 0.004, 0.03, 0.5, 0.5], ["color", ["skin"], [], 0.004, 1, [1, 1, 1], [0, 0, 0], 1, 0, 0]]}
+face = retouch.clean_face(raw, 800 / 1200)
+assert [layer[0] for layer in face["layers"]] == ["band", "color", "even", "shine"] and sorted(face["shapes"]) == ["skin"], face
+x0, y0, x1, y1 = ImageChops.difference(retouch.paint(im.copy(), {"f": face}), im).getbbox()
+assert 440 <= x0 <= 482 and 260 <= y0 <= 302 and 718 <= x1 <= 760 and 538 <= y1 <= 580, (x0, y0, x1, y1)
+for bad in (["band", ["nope"], [], 0.004, 0.002, 0.02, 0.9, 0.5, 1], ["band", ["skin"], [], 0.004, 0.02, 0.002, 0.9, 0.5, 1],
+            ["color", ["skin"], [], 0.004, 9, [1, 1, 1], [0, 0, 0], 1, 0, 0], ["blur", ["skin"], [], 0.004]):
+    try:
+        retouch.clean_face({**raw, "layers": [bad]}, 800 / 1200)
+        raise SystemExit(f"accepted a bad layer: {bad}")
+    except retouch.Invalid:
+        pass
 PYEOF
-chk $? 0 "warp: zero displacement is the identity, changes stay inside the radius"
+chk $? 0 "warp and layers: identity stays identical, changes stay inside the face, bad layers are refused"
 RK=$(curl -s -H "$T" -H 'Content-Type: application/json' -d '{"slug":"retouch_test"}' $B/api/manage/albums | j 'd["share_key"]')
 RP=$(put $TMP/RT01.JPG "dddd0001$(printf '%036d' 0)" retouch_test | j 'd["photo_id"]')
 RU=$B/api/share/$RK/retouch/$RP
@@ -422,6 +438,18 @@ chk "$(rtc "{\"author\":\"x\",\"parent\":\"000000000000\",\"faces\":{\"faceaaaa\
 chk "$(curl -s -H 'Accept-Language: en' -H 'Content-Type: application/json' -d "{\"author\":\"\",\"faces\":{\"faceaaaa\":$FA}}" $RU | j 'd["detail"]')" "The name must be 1 to 24 characters" "a name is required, errors are localized"
 chk "$(rtc "{\"author\":\"x\",\"faces\":{\"faceaaaa\":$FA}}" $B/api/share/nokey/retouch/$RP)" 404 "unknown share key → 404"
 chk "$(curl -s -o /dev/null -w '%{http_code}' $B/vendor/mediapipe-0.0.0/vision_bundle.mjs)" 404 "only the pinned vendor files are served"
+# 皮膚、膚色的圖層也跟著紀錄走，輸出時先調色再變形
+FL='{"box":[0.2,0.2,0.4,0.4],"params":{"smooth":60,"whiten":30},"shapes":{"oval":[0.22,0.22,0.38,0.22,0.38,0.38,0.22,0.38]},"layers":[["band",["oval"],[],0.004,0.001,0.01,0.6,0.02,0.1],["color",["oval"],[],0.004,0.8,[1,1,1],[0,0,0],0.95,0,0]]}'
+R=$(rt "{\"parent\":null,\"author\":\"小美\",\"faces\":{\"faceaaaa\":$FL}}"); C6=$(echo $R | j 'd["head"]')
+chk "$(echo $R | j '([l[0] for l in d["state"]["faceaaaa"]["layers"]], d["state"]["faceaaaa"]["prims"], d["commits"][0]["params"]["faceaaaa"])')" "(['band', 'color'], [], {'smooth': 60.0, 'whiten': 30.0})" "skin layers are saved with the face"
+curl -s -o $TMP/rt_l.jpg $B/media/$RK/retouch/$C6/o/$RP
+chk "$($PY -c "
+from PIL import Image, ImageStat
+a, b = Image.open('$TMP/RT01.JPG'), Image.open('$TMP/rt_l.jpg')
+inside = lambda im: ImageStat.Stat(im.crop((300, 300, 420, 420)).convert('L'))
+print(inside(b).mean[0] > inside(a).mean[0] + 5, inside(b).stddev[0] < inside(a).stddev[0])")" "True True" "render with layers: brighter and smoother inside the shape"
+chk "$(rtc '{"author":"x","faces":{"faceaaaa":{"box":[0.2,0.2,0.4,0.4],"shapes":{"oval":[0.22,0.22,0.38,0.22,0.38,0.38]},"layers":[["band",["nope"],[],0.004,0.001,0.01,0.6,0.02,0.1]]}}}')" 400 "layer naming a missing shape → 400"
+rt "{\"commit\":null,\"author\":\"阿明\"}" $RU/restore >/dev/null
 # 刪照片：紀錄和輸出的檔一起清
 C5=$(rt "{\"parent\":null,\"author\":\"阿明\",\"faces\":{\"faceaaaa\":$FA}}" | j 'd["head"]')
 chk "$(curl -s -o /dev/null -w '%{http_code}' $B/media/$RK/retouch/$C5/s/$RP)" 200 "render again after restoring"

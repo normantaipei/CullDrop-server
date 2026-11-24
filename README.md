@@ -71,7 +71,7 @@ On other systems, mount the share yourself, create an empty `.culldrop-nas` file
 For group photos where everyone wants to tune their own face. It is off by default, because anyone with a share link can use it. Turn it on with `CULLDROP_RETOUCH=1`.
 
 - **Pick a face.** Open a photo in the gallery, choose Retouch, and tap a face. If a face is missed, add it by hand.
-- **Adjust it.** Nine sliders: face width, cheekbones, jaw, chin length, eye size, eye distance, nose width, mouth size, and mouth corners.
+- **Adjust it.** Sliders come in five groups. Face shape: face width, cheekbones, jaw, chin, forehead, head size. Features: eye size and distance, nose width and length, mouth size, width and corners, philtrum. Skin: smoothing, blemishes, even tone, shine, dark circles, smile lines. Skin tone: brightness, warmth, rosiness. Makeup: eye brightening, teeth whitening, lip color, blush.
 - **Save a record.** Each save adds a record with your name, like a commit. The next person continues from there. Edits to different faces merge by themselves. If two people change the same face, the second one chooses which to keep.
 - **Go back any time.** The history shows who changed what. You can view or restore any record, or the original.
 

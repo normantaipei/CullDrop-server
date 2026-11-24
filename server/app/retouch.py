@@ -10,8 +10,19 @@
   ["s", cx, cy, ux, uy, rx, ry, k]    縮放：以圓心放大（k > 0）或縮小；橢圓，長軸方向 (ux, uy)
 輸出的點 x 取樣自原圖的 x + D(x)，D 是所有元件的和，權重 w(t) = (1 − t²)²。
 
-一張臉：{"box": [x0, y0, x1, y1], "params": {滑桿名: -100～100}, "prims": [元件…], "by": 誰改的, "at": 時間}
-狀態：{臉的 id: 臉}。params 只給介面顯示與比較用，輸出只看 prims。
+皮膚與膚色（磨皮、去瑕疵、美白…）是另一種東西：不搬動內容，只改顏色。做法一樣是返圖頁把滑桿換成幾種通用的「圖層」，
+伺服器只認圖層，不管滑桿的意思（返圖頁 retouch.js 的 paintCrop() 是同一套公式）。圖層先做，變形後做，所以遮罩用的是原圖上的位置。
+  shapes：{名字: [x0, y0, x1, y1, …]}，臉上各部位的多邊形（輪廓、眼、眉、唇…），圖層用名字指定範圍
+  每個圖層的前三項都是 [要的形狀], [挖掉的形狀], 邊緣羽化；接著：
+  ["band", …, s1, s2, gain, lo, hi]                 去掉 s1～s2 之間粗細的明暗不均（磨皮、去瑕疵）。和周圍的亮度差在 lo 以下的全去，
+                                                     到 hi 以上的不動：差很多的是五官的輪廓，不是瑕疵
+  ["color", …, gamma, [r, g, b 倍率], [r, g, b 加], sat, lo, hi]   調色；lo < hi 時只作用在亮度 lo 以上的地方（牙齒）
+  ["even", …, sigma, k]                              把大範圍的色偏拉回整張臉的平均（均勻膚色），不動明暗
+  ["shine", …, sigma, k, thr]                        壓掉比周圍亮的反光（去油光）
+  長度（羽化、s1、s2、sigma）都是等比座標；亮度是 0～1。
+
+一張臉：{"box": [x0, y0, x1, y1], "params": {滑桿名: -100～100}, "prims": [元件…], "shapes": {…}, "layers": [圖層…], "by": 誰改的, "at": 時間}
+狀態：{臉的 id: 臉}。params 只給介面顯示與比較用，輸出只看 prims、shapes、layers。
 """
 
 import math
@@ -19,17 +30,22 @@ import os
 import re
 from pathlib import Path
 
-from PIL import Image, ImageOps, JpegImagePlugin
+from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageMath, ImageOps, ImageStat, JpegImagePlugin
 
 MAX_FACES = 64
 MAX_PRIMS = 96
-MAX_PARAMS = 24
+MAX_PARAMS = 48
+MAX_SHAPES = 24
+MAX_POINTS = 64     # 一個形狀最多幾個點
+MAX_LAYERS = 24
+MAX_SIGMA = 0.1
 MAX_MOVE = 0.5        # 推的距離最多是半徑的一半：再多內容會摺疊
 MAX_SCALE = 0.5
 MAX_RADIUS = 0.5
 MAX_CELLS = 60000     # 一塊最多切幾格
 FACE_ID_RE = re.compile(r"^[0-9a-z]{6,16}$")
 PARAM_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]{0,23}$")
+LUMA = (0.299, 0.587, 0.114)      # 和 Pillow 轉灰階用的一樣
 
 
 class Invalid(ValueError):
@@ -99,16 +115,81 @@ def clean_face(raw, aspect: float):
                 prims.append(["s", cx, cy, round(ux / n, 6), round(uy / n, 6), rx, ry, k])
         else:
             raise Invalid("prim")
-    if not prims:
+    raw_shapes = raw.get("shapes") or {}
+    if not isinstance(raw_shapes, dict) or len(raw_shapes) > MAX_SHAPES:
+        raise Invalid("shapes")
+    shapes = {}
+    for name in sorted(raw_shapes):
+        pts = raw_shapes[name]
+        if not isinstance(name, str) or not PARAM_RE.match(name) or not isinstance(pts, list) or len(pts) % 2 or not 6 <= len(pts) <= MAX_POINTS * 2:
+            raise Invalid("shape")
+        flat = []
+        for i in range(0, len(pts), 2):
+            flat += center(pts[i], pts[i + 1])
+        shapes[name] = flat
+
+    raw_layers = raw.get("layers") or []
+    if not isinstance(raw_layers, list) or len(raw_layers) > MAX_LAYERS:
+        raise Invalid("layers")
+    layers = []
+    for layer in raw_layers:
+        clean = _clean_layer(layer, shapes)
+        if clean:
+            layers.append(clean)
+    used = {n for layer in layers for n in layer[1] + layer[2]}
+    shapes = {n: pts for n, pts in shapes.items() if n in used}
+    if not prims and not layers:
         return None
-    return {"box": [x0, y0, x1, y1], "params": params, "prims": prims}
+    face = {"box": [x0, y0, x1, y1], "params": params, "prims": prims}
+    if layers:
+        face["shapes"], face["layers"] = shapes, layers
+    return face
+
+
+def _names(value, shapes: dict, required: bool):
+    if not isinstance(value, list) or len(value) > 8 or (required and not value) or any(not isinstance(n, str) or n not in shapes for n in value):
+        raise Invalid("layer shapes")
+    return list(value)
+
+
+def _triple(value, lo: float, hi: float):
+    if not isinstance(value, list) or len(value) != 3:
+        raise Invalid("triple")
+    return [_num(v, lo, hi) for v in value]
+
+
+def _clean_layer(layer, shapes: dict):
+    """檢查一個圖層；沒有效果的回傳 None。"""
+    sizes = {"band": 9, "color": 10, "even": 6, "shine": 7}
+    if not isinstance(layer, list) or not layer or layer[0] not in sizes or len(layer) != sizes[layer[0]]:
+        raise Invalid("layer")
+    kind = layer[0]
+    head = [kind, _names(layer[1], shapes, True), _names(layer[2], shapes, False), _num(layer[3], 0, MAX_SIGMA)]
+    if kind == "band":
+        s1, s2 = _num(layer[4], 0, MAX_SIGMA), _num(layer[5], 1e-5, MAX_SIGMA)
+        gain, lo, hi = _num(layer[6], 0, 1), _num(layer[7], 0, 1), _num(layer[8], 0.004, 1)
+        if s1 >= s2 or lo >= hi:
+            raise Invalid("band")
+        return head + [s1, s2, gain, lo, hi] if gain else None
+    if kind == "color":
+        gamma, mul, add = _num(layer[4], 0.4, 2.5), _triple(layer[5], 0.5, 1.6), _triple(layer[6], -0.3, 0.3)
+        sat, lo, hi = _num(layer[7], 0, 2.5), _num(layer[8], 0, 1), _num(layer[9], 0, 1)
+        if gamma == 1 and mul == [1, 1, 1] and add == [0, 0, 0] and sat == 1:
+            return None
+        return head + [gamma, mul, add, sat, lo, hi]
+    if kind == "even":
+        sigma, k = _num(layer[4], 1e-5, MAX_SIGMA), _num(layer[5], 0, 1)
+        return head + [sigma, k] if k else None
+    sigma, k, thr = _num(layer[4], 1e-5, MAX_SIGMA), _num(layer[5], 0, 1), _num(layer[6], 0, 0.99)
+    return head + [sigma, k, thr] if k else None
 
 
 def same(a, b) -> bool:
     """兩張臉的修容內容一樣（不看是誰、什麼時候改的）。"""
     if a is None or b is None:
         return a is None and b is None
-    return a["prims"] == b["prims"] and a["params"] == b["params"]
+    return (a["prims"] == b["prims"] and a["params"] == b["params"]
+            and (a.get("layers") or []) == (b.get("layers") or []) and (a.get("shapes") or {}) == (b.get("shapes") or {}))
 
 
 def iou(a, b) -> float:
@@ -283,6 +364,133 @@ def warp(im: Image.Image, state: dict) -> Image.Image:
     return im
 
 
+# ---------- 圖層（皮膚、膚色）----------
+
+def _blur(im: Image.Image, sigma_px: float) -> Image.Image:
+    return im.filter(ImageFilter.GaussianBlur(sigma_px)) if sigma_px >= 0.3 else im
+
+
+def _math(expr, **images) -> Image.Image:
+    return ImageMath.lambda_eval(expr, **images)
+
+
+def _to_l(a, value):
+    """浮點 → 8 位元（四捨五入；超出範圍的會被截掉）"""
+    return a["convert"](value + 0.5, "L")
+
+
+def _mask(size, origin, shapes: dict, include, exclude, feather_px: float, width: int) -> Image.Image:
+    """多邊形 → 遮罩（要的填白、挖掉的填黑，再把邊緣糊開）"""
+    mask = Image.new("L", size, 0)
+    draw = ImageDraw.Draw(mask)
+    for names, fill in ((include, 255), (exclude, 0)):
+        for name in names:
+            pts = shapes[name]
+            draw.polygon([(pts[i] * width - origin[0], pts[i + 1] * width - origin[1]) for i in range(0, len(pts), 2)], fill=fill)
+    return mask, _blur(mask, feather_px)
+
+
+def _smoothstep(v: float, lo: float, hi: float) -> float:
+    t = min(1.0, max(0.0, (v - lo) / (hi - lo)))
+    return t * t * (3 - 2 * t)
+
+
+def _band(crop, mask, s1, s2, gain, lo, hi):
+    g1, g2 = _blur(crop, s1), _blur(crop, s2)
+    # 每個點要去掉多少：和周圍差一點點的（毛孔、斑、痘）全去，差很多的（鼻孔、雙眼皮、髮絲）不動
+    amount = ImageChops.difference(g1.convert("L"), g2.convert("L")).point([round(gain * (1 - _smoothstep(v / 255, lo, hi)) * 255) for v in range(256)])
+    bands = [_math(lambda a: _to_l(a, a["float"](a["c"]) - (a["float"](a["g1"]) - a["float"](a["g2"])) * a["float"](a["k"]) / 255), c=c, g1=b1, g2=b2, k=amount)
+             for c, b1, b2 in zip(crop.split(), g1.split(), g2.split())]
+    return Image.composite(Image.merge("RGB", bands), crop, mask)
+
+
+def _color(crop, mask, gamma, mul, add, sat, lo, hi):
+    lut = []
+    for m, d in zip(mul, add):
+        lut += [min(255, max(0, round((((v / 255) ** gamma) * m + d) * 255))) for v in range(256)]
+    out = crop.point(lut)
+    if sat != 1:
+        out = ImageEnhance.Color(out).enhance(sat)
+    if lo < hi:         # 只作用在夠亮的地方
+        mask = ImageChops.multiply(mask, crop.convert("L").point([round(_smoothstep(v / 255, lo, hi) * 255) for v in range(256)]))
+    return Image.composite(out, crop, mask)
+
+
+def _even(crop, mask, hard, sigma, k):
+    low = _blur(crop, sigma)
+    stat = ImageStat.Stat(crop, hard)
+    if not stat.count[0]:
+        return crop
+    mean = stat.mean
+    mean_l = sum(m * w for m, w in zip(mean, LUMA))
+    low_l = low.convert("L")
+    bands = [_math(lambda a: _to_l(a, a["float"](a["c"]) - ((a["float"](a["g"]) - a["float"](a["gl"])) - a["off"]) * k),
+                   c=c, g=g, gl=low_l, off=m - mean_l) for c, g, m in zip(crop.split(), low.split(), mean)]
+    return Image.composite(Image.merge("RGB", bands), crop, mask)
+
+
+def _shine(crop, mask, sigma, k, thr):
+    lum = crop.convert("L")
+    drop = _math(lambda a: a["max"](a["float"](a["l"]) - a["float"](a["gl"]), 0) * a["float"](a["w"]) * (k / 255),
+                 l=lum, gl=_blur(crop, sigma).convert("L"), w=lum.point([round(_smoothstep(v / 255, thr, 1) * 255) for v in range(256)]))
+    bands = [_math(lambda a: _to_l(a, a["float"](a["c"]) - a["d"]), c=c, d=drop) for c in crop.split()]
+    return Image.composite(Image.merge("RGB", bands), crop, mask)
+
+
+def paint_region(face: dict, width: int, height: int):
+    """這張臉的圖層會動到的範圍（像素）：用到的形狀的外框，加上模糊需要的邊。沒有圖層回傳 None。"""
+    layers, shapes = face.get("layers") or [], face.get("shapes") or {}
+    if not layers:
+        return None
+    xs, ys, pad = [], [], 0.0
+    for layer in layers:
+        for name in layer[1]:
+            xs += shapes[name][0::2]
+            ys += shapes[name][1::2]
+        reach = max(layer[5] if layer[0] == "band" else layer[4] if layer[0] in ("even", "shine") else 0, layer[3])
+        pad = max(pad, reach)
+    pad = pad * 3 * width + 2
+    x0, y0 = max(0, math.floor(min(xs) * width - pad)), max(0, math.floor(min(ys) * width - pad))
+    x1, y1 = min(width, math.ceil(max(xs) * width + pad)), min(height, math.ceil(max(ys) * width + pad))
+    return (x0, y0, x1, y1) if x1 - x0 >= 2 and y1 - y0 >= 2 else None
+
+
+def paint_crop(crop: Image.Image, face: dict, origin, width: int):
+    """對一張臉的範圍做完所有圖層。回傳 (結果, 動到的地方)；width 是整張圖的寬（座標換算用）。"""
+    shapes, masks = face["shapes"], {}
+    out, touched = crop, Image.new("L", crop.size, 0)
+    for layer in face["layers"]:
+        key = (tuple(layer[1]), tuple(layer[2]), layer[3])
+        if key not in masks:
+            masks[key] = _mask(crop.size, origin, shapes, layer[1], layer[2], layer[3] * width, width)
+        hard, mask = masks[key]
+        if layer[0] == "band":
+            out = _band(out, mask, layer[4] * width, layer[5] * width, layer[6], layer[7], layer[8])
+        elif layer[0] == "color":
+            out = _color(out, mask, *layer[4:])
+        elif layer[0] == "even":
+            out = _even(out, mask, hard, layer[4] * width, layer[5])
+        else:
+            out = _shine(out, mask, layer[4] * width, layer[5], layer[6])
+        touched = ImageChops.lighter(touched, mask)
+    return out, touched.point(lambda v: 255 if v else 0)
+
+
+def paint(im: Image.Image, state: dict) -> Image.Image:
+    """做所有臉的圖層（直接改 im）。每張臉都從沒動過的原圖取，再只把動到的地方貼回去，所以和臉的先後順序無關。"""
+    width, height = im.size
+    jobs = []
+    for fid in sorted(state):
+        region = paint_region(state[fid], width, height)
+        if region:
+            jobs.append((region, im.crop(region), state[fid]))
+    for region, crop, face in jobs:
+        gray = crop.mode != "RGB"
+        out, touched = paint_crop(crop.convert("RGB") if gray else crop, face, region[:2], width)
+        im.paste(out.convert(im.mode) if gray else out, region[:2], touched)
+    return im
+
+
 def _save(im: Image.Image, dst: Path, fmt: str, **options):
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_name(f"{dst.name}.{os.getpid()}.tmp")
@@ -308,6 +516,7 @@ def render(src: Path, state: dict, full: Path, derived=()):
             im = im.convert("RGB")
         im.load()
     exif.pop(0x0112, None)      # 已經轉正
+    paint(im, state)            # 先調顏色（遮罩是原圖上的位置），再變形
     warp(im, state)
     options = {"quality": 95, "exif": exif}
     if sampling in (0, 1, 2) and im.mode == "RGB":

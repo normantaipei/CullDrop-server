@@ -129,3 +129,12 @@ body.rt-open { overflow: hidden; }
   .lb-bar { gap: 10px; padding: 0 12px; }
   .lb-bar #lb-info { display: none; }
 }
+.rt-group { border-top: 1px solid var(--line); }
+.rt-group:first-child { border-top: 0; }
+.rt-group summary { display: flex; align-items: center; gap: 8px; padding: 10px 0; color: var(--ink); font-weight: 600; cursor: pointer; list-style: none; user-select: none; -webkit-user-select: none; }
+.rt-group summary::-webkit-details-marker { display: none; }
+.rt-group summary::after { content: "⌃"; margin-left: auto; color: var(--ink-soft); transform: rotate(180deg); transition: transform .15s; }
+.rt-group[open] summary::after { transform: none; }
+.rt-group summary em { min-width: 18px; padding: 0 6px; border-radius: 999px; background: var(--brand); color: #fff; font-size: 11px; font-style: normal; line-height: 18px; text-align: center; }
+.rt-group summary em:empty { display: none; }
+.rt-group .rt-slider:last-child { margin-bottom: 8px; }
