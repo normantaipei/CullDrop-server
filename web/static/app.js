@@ -26,6 +26,10 @@
   }
 
   function ratio(p) { return p.w && p.h ? p.w / p.h : 1.5; }
+  // 修過的照片（p.retouch = 現在用的那一筆紀錄）顯示修容後的版本；original 時一律給原圖
+  function media(p, kind, original) {
+    return p.retouch && !original && kind !== "raw" ? `/media/${key}/retouch/${p.retouch}/${kind}/${p.id}` : `/media/${key}/${kind}/${p.id}`;
+  }
   function camName(k) { return (album.cameras && album.cameras[k]) || (k ? k.slice(-6) : ""); }
 
   let renderedWidth = 0;
@@ -56,9 +60,9 @@
         for (const c of row.cells) {
           const p = list[c.i]; const idx = visible.push(p) - 1;
           const a = document.createElement("a");
-          a.className = "tile"; a.href = `/media/${key}/p/${p.id}`; a.style.width = c.w + "px"; a.style.height = row.h + "px";
+          a.className = "tile" + (p.retouch ? " retouched" : ""); a.href = media(p, "p"); a.style.width = c.w + "px"; a.style.height = row.h + "px";
           const img = document.createElement("img"); img.loading = "lazy"; img.decoding = "async";
-          img.src = `/media/${key}/${rowHeight() > 200 ? "t" : "s"}/${p.id}`; img.alt = "";
+          img.src = media(p, rowHeight() > 200 ? "t" : "s"); img.alt = "";
           img.onload = () => img.classList.add("ok");
           a.appendChild(img);
           a.onclick = (e) => { e.preventDefault(); openLightbox(idx); };
@@ -94,13 +98,14 @@
     catch { return false; }
   })();
   const jpgName = (n) => /\.jpe?g$/i.test(n || "") ? n : `${(n || "photo").replace(/\.[^.]+$/, "")}.jpg`;
+  const saveName = (p, original) => p.retouch && !original ? `${(p.name || "photo").replace(/\.[^.]+$/, "")}_retouch.jpg` : jpgName(p.name);
 
-  async function fetchFiles(photos, onProgress) {
+  async function fetchFiles(photos, onProgress, original) {
     const files = [];
     for (const p of photos) {
-      const r = await fetch(`/media/${key}/o/${p.id}`);
+      const r = await fetch(media(p, "o", original));
       if (!r.ok) throw new Error(r.status);
-      files.push(new File([await r.blob()], jpgName(p.name), { type: "image/jpeg" }));
+      files.push(new File([await r.blob()], saveName(p, original), { type: "image/jpeg" }));
       onProgress && onProgress(files.length);
     }
     return files;
@@ -130,7 +135,8 @@
   // 燈箱
   const lb = document.getElementById("lightbox"), lbImg = document.getElementById("lb-img");
   const lbDl = document.getElementById("lb-dl");
-  let cur = -1, lbFiles = null, lbBusy = false;
+  const lbOrig = document.getElementById("lb-orig"), lbRetouch = document.getElementById("lb-retouch");
+  let cur = -1, lbFiles = null, lbBusy = false, lbOriginal = false;
   lbDl.addEventListener("click", async (e) => {
     if (!canSaveToPhotos) return;
     e.preventDefault();
@@ -139,7 +145,7 @@
     try {
       if (!lbFiles) {
         lbBusy = true; lbDl.textContent = t("下載中…");
-        lbFiles = await fetchFiles([photo]);
+        lbFiles = await fetchFiles([photo], null, lbOriginal);
         lbBusy = false;
         if (visible[cur] !== photo) { lbFiles = null; return; }   // 下載時翻到別張了
       }
@@ -150,17 +156,35 @@
       lbBusy = false; lbFiles = null; lbDl.textContent = t("下載失敗，再試一次");
     }
   });
-  function openLightbox(i) {
+  function openLightbox(i, original) {
     cur = i; const p = visible[i];
-    lbImg.src = `/media/${key}/p/${p.id}`;
+    lbOriginal = !!original && !!p.retouch;
+    lbImg.src = media(p, "p", lbOriginal);
     document.getElementById("lb-name").textContent = p.name;
     const info = [p.taken_at ? p.taken_at.slice(11, 16) : "", p.camera ? camName(p.camera) : "", p.stars ? "★".repeat(p.stars) : ""].filter(Boolean).join(" · ");
     document.getElementById("lb-info").textContent = info;
-    lbDl.href = `/media/${key}/o/${p.id}`;
+    lbDl.href = media(p, "o", lbOriginal);
+    lbOrig.hidden = !p.retouch; lbOrig.textContent = lbOriginal ? t("看修容版") : t("看原圖");
+    lbRetouch.hidden = !(album.retouch && window.CulldropRetouch);
     lbFiles = null; lbDl.textContent = canSaveToPhotos ? t("存到照片") : t("下載 JPG");
     const raw = document.getElementById("lb-raw"); raw.hidden = !p.raw_name; raw.href = `/media/${key}/raw/${p.id}`;
     lb.hidden = false;
   }
+  lbOrig.onclick = (e) => { e.preventDefault(); openLightbox(cur, !lbOriginal); };
+  // 修容：存了新的一筆（或還原成原圖）就換成那一版，縮圖和燈箱一起更新
+  lbRetouch.onclick = () => {
+    const photo = visible[cur];
+    window.CulldropRetouch.open({
+      key, photo, vendor: album.retouch.vendor,
+      onChange: (commit) => {
+        if ((photo.retouch || null) === commit) return;
+        photo.retouch = commit;
+        render();
+        const i = visible.indexOf(photo);
+        if (!lb.hidden && i >= 0) openLightbox(i);
+      },
+    });
+  };
   document.getElementById("lb-close").onclick = () => { lb.hidden = true; };
   document.getElementById("lb-prev").onclick = () => openLightbox((cur - 1 + visible.length) % visible.length);
   document.getElementById("lb-next").onclick = () => openLightbox((cur + 1) % visible.length);

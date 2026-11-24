@@ -20,6 +20,8 @@ Culldrop 伺服器：一台伺服器、多本相簿。
   CULLDROP_NAS_DIR         NAS 掛載點；設了就把收到的檔案備份到 <NAS>/<相簿>/，手機等備份完才刪檔。
                            目錄裡要有 .culldrop-nas 標記檔才算掛上（沒掛上時掛載點是空資料夾，不能寫進去當備份）
   CULLDROP_NAS_POLL        沒工作時多久看一次（秒，預設 5）
+  CULLDROP_RETOUCH         設 1 才開返圖頁的修容（捏臉）。拿得到分享連結的人都能改，所以預設不開。
+                           瀏覽器找臉用的模型（MediaPipe，約 19MB）第一次有人開修容時由伺服器下載到 <資料目錄>/vendor，伺服器要能連外網
 """
 
 import fcntl
@@ -36,6 +38,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+import urllib.request
 import zipfile
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
@@ -47,9 +50,10 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import i18n
+from . import i18n, retouch
 
 # ---------- 設定 ----------
 
@@ -64,6 +68,7 @@ NAS_DIR = Path(os.environ["CULLDROP_NAS_DIR"]).expanduser() if os.environ.get("C
 NAS_MARKER = ".culldrop-nas"
 NAS_POLL_SEC = float(os.environ.get("CULLDROP_NAS_POLL", "5"))
 NAS_MAX_BACKOFF = 3600
+RETOUCH = os.environ.get("CULLDROP_RETOUCH", "").strip().lower() in ("1", "true", "yes", "on")
 
 THUMB_EDGE, SMALL_EDGE, PREVIEW_EDGE = 800, 400, 2048
 OG_SIZE = (1200, 630)         # 通訊軟體連結預覽圖
@@ -234,6 +239,29 @@ CREATE TABLE IF NOT EXISTS cameras (       -- 手機端的相機顯示名稱（�
     name TEXT NOT NULL,
     creator TEXT,
     updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS retouch_commits (   -- 修容紀錄：存一次一筆，像 git 的 commit。每筆是這張照片當時每張臉的完整設定，不是差異
+    id TEXT PRIMARY KEY,             -- 內容雜湊的前 12 碼
+    album_id INTEGER NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+    photo_id TEXT NOT NULL,
+    parent TEXT,                     -- 接在哪一筆後面（第一筆是 NULL = 原圖）
+    seq INTEGER NOT NULL,            -- 這張照片的第幾筆
+    author TEXT NOT NULL,            -- 自己填的名字，沒有帳號
+    message TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'edit',   -- edit（修）/ restore（還原到舊的一筆）
+    ref TEXT,                        -- restore：還原到哪一筆（NULL = 原圖）
+    changed TEXT NOT NULL DEFAULT '[]',  -- 這筆動了哪幾張臉
+    summary TEXT NOT NULL DEFAULT '{}',  -- {臉 id: 滑桿值}：列紀錄時不用把整個 state 讀出來
+    state TEXT NOT NULL,             -- {臉 id: 臉}，格式見 retouch.py
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS retouch_commits_photo ON retouch_commits(album_id, photo_id, seq);
+CREATE TABLE IF NOT EXISTS retouch_heads (     -- 每張照片現在用哪一筆
+    album_id INTEGER NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+    photo_id TEXT NOT NULL,
+    commit_id TEXT NOT NULL,
+    active INTEGER NOT NULL,         -- 這一筆有沒有修過的臉（還原成原圖後是 0，返圖頁就顯示原圖）
+    PRIMARY KEY (album_id, photo_id)
 );
 """
 
@@ -1354,6 +1382,9 @@ def delete_photo_rows(con, album_id: int, rows) -> int:
     for r in rows:
         pk, photo_id, raw_sha, raw_name = r["id"], r["photo_id"], r["raw_sha"], r["raw_name"]
         con.execute("DELETE FROM photos WHERE id=?", (pk,))
+        con.execute("DELETE FROM retouch_commits WHERE album_id=? AND photo_id=?", (album_id, photo_id))
+        con.execute("DELETE FROM retouch_heads WHERE album_id=? AND photo_id=?", (album_id, photo_id))
+        retouch_forget(album_id, photo_id)
         deleted += 1
         # 還沒備份就刪的不用備了；已經在 NAS 的留著
         slug = con.execute("SELECT slug FROM albums WHERE id=?", (album_id,)).fetchone()["slug"]
@@ -1573,12 +1604,16 @@ def share_album(key: str):
         a, visible, title = share_view(con, key)
         rows = con.execute(f"SELECT * FROM photos WHERE album_id=? {ORDER}", (a["id"],)).fetchall()
         cams = camera_names(con)
+        heads = retouch_active(con, a["id"])
     photos = [photo_json(r) for r in rows if visible is None or r["photo_id"] in visible]
     for p in photos:
         p.pop("creator", None)
+        if p["id"] in heads:
+            p["retouch"] = heads[p["id"]]      # 修過：返圖頁改顯示 /media/<key>/retouch/<這筆>/…
     used = {p["camera"] for p in photos}
     return {"title": title, "shoot_date": a["shoot_date"], "photos": photos, "people": [],
-            "cameras": {k: v["name"] for k, v in cams.items() if k in used}, "live": False, "pending": 0, "updated_at": a["updated_at"]}
+            "cameras": {k: v["name"] for k, v in cams.items() if k in used}, "live": False, "pending": 0, "updated_at": a["updated_at"],
+            "retouch": {"vendor": f"/vendor/{RETOUCH_VENDOR_VERSION}"} if RETOUCH else None}
 
 
 @app.api_route("/media/{key}/{kind}/{photo_id}", methods=["GET", "HEAD"])
@@ -1632,6 +1667,11 @@ def _zip_stream(items):
     buf = _ZipBuffer()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED, allowZip64=True) as zf:
         for name, path in items:
+            if callable(path):      # 修容後的檔：還沒輸出過的現在才做
+                try:
+                    path = path()
+                except Exception:
+                    continue
             if not path.exists():
                 continue
             with zf.open(zipfile.ZipInfo.from_file(path, arcname=name), "w", force_zip64=True) as dst, open(path, "rb") as src:
@@ -1646,6 +1686,7 @@ def share_zip(key: str, min_stars: int = 0, fmt: str = "jpg"):
     with db() as con:
         a, visible, title = share_view(con, key)
         rows = con.execute(f"SELECT * FROM photos WHERE album_id=? {ORDER}", (a["id"],)).fetchall()
+        heads = retouch_active(con, a["id"], with_state=True)
     rows = [r for r in rows if (r["stars"] or 0) >= min_stars and (visible is None or r["photo_id"] in visible)]
     if fmt not in ("jpg", "raw", "all"):
         raise HTTPException(400, "fmt 要是 jpg、raw 或 all")
@@ -1655,6 +1696,12 @@ def share_zip(key: str, min_stars: int = 0, fmt: str = "jpg"):
             name = r["filename"]
             items.append((name if name not in seen else f"{r['photo_id'][:8]}_{name}", original_path(r["photo_id"])))
             seen.add(name)
+            if r["photo_id"] in heads:      # 修過的：原圖之外多一張 _retouch
+                commit, state = heads[r["photo_id"]]
+                name = retouch_name(r["filename"])
+                items.append((name if name not in seen else f"{r['photo_id'][:8]}_{name}",
+                              lambda a=a["id"], p=r["photo_id"], c=commit, s=state: retouch_files(a, p, c, s)["o"]))
+                seen.add(name)
         if fmt != "jpg" and r["raw_sha"]:
             name = r["raw_name"]
             items.append((name if name not in seen else f"{r['raw_sha'][:8]}_{name}", raw_path(r["raw_sha"], r["raw_name"])))
@@ -1669,6 +1716,375 @@ def share_zip(key: str, min_stars: int = 0, fmt: str = "jpg"):
 def _quote(s: str) -> str:
     from urllib.parse import quote
     return quote(s, safe="")
+
+
+# ---------- 修容（捏臉）----------
+# 給 cos 團照接力修容用：每個人在返圖頁挑自己的臉微調，存一次就是一筆紀錄，下一個人接著改。
+# 不用 token（拿得到分享連結的人都能改），所以要設 CULLDROP_RETOUCH=1 才開。原圖永遠不動，隨時能還原到任何一筆。
+
+RETOUCH_KINDS = {"o": ("jpg", 0, "JPEG"), "p": ("jpg", PREVIEW_EDGE, "JPEG"), "t": ("webp", THUMB_EDGE, "WEBP"), "s": ("webp", SMALL_EDGE, "WEBP")}
+RETOUCH_MAX_BODY = 512 * 1024
+RETOUCH_KEEP = 500             # 每張照片留最近幾筆紀錄
+RETOUCH_RATE = (30, 60.0)      # 每個 IP 多久內最多存幾次
+COMMIT_RE = re.compile(r"^[0-9a-f]{12}$")
+_retouch_hits: dict = {}
+_retouch_render = threading.Semaphore(1)   # 原尺寸輸出吃記憶體，一次一張
+
+# 瀏覽器端找臉、抓特徵點用的 MediaPipe（Apache-2.0）。檔案大（約 19MB）不放進 repo：第一次用到時下載到資料目錄，用 SHA-256 核對。
+# 照片不會離開瀏覽器與這台伺服器；下載的只有程式和模型。離線安裝可以自己把檔案放到 <資料目錄>/vendor/<版本>/。
+RETOUCH_VENDOR_VERSION = "mediapipe-1.2.3"
+_NPM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3"
+_MODELS = "https://storage.googleapis.com/mediapipe-models"
+RETOUCH_VENDOR = {
+    "vision_bundle.mjs": (f"{_NPM}/vision_bundle.mjs", "fb0c02c296f44ce0cc324ba16bd646d8773eb4a7847db4019cc4d0430db7a9b5", "text/javascript"),
+    "vision_wasm_internal.js": (f"{_NPM}/wasm/vision_wasm_internal.js", "2aa5fd3fdd3d8208cd7587df0bb19fb6925c4ea16a76dd025aedc1f64d6a6309", "text/javascript"),
+    "vision_wasm_internal.wasm": (f"{_NPM}/wasm/vision_wasm_internal.wasm", "225bc06c0f51a9cf31fea0e9e0b0243e9e01fb5ef332cc1a7fa6656dbdfdaabf", "application/wasm"),
+    "face_landmarker.task": (f"{_MODELS}/face_landmarker/face_landmarker/float16/1/face_landmarker.task", "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff", "application/octet-stream"),
+    "blaze_face_short_range.tflite": (f"{_MODELS}/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite", "b4578f35940bf5a1a655214a1cce5cab13eba73c1297cd78e1a04c2380b0152f", "application/octet-stream"),
+}
+
+
+def retouch_vendor(name: str) -> Path:
+    url, sha, _ = RETOUCH_VENDOR[name]
+    dst = DATA_DIR / "vendor" / RETOUCH_VENDOR_VERSION / name
+    if dst.exists():
+        return dst
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = dst.parent / f"{name}.lock"
+    with open(lock_path, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)       # 兩個 worker 不要同時下載同一個檔
+        try:
+            if dst.exists():
+                return dst
+            tmp, h, size = dst.with_name(f"{name}.part"), hashlib.sha256(), 0
+            req = urllib.request.Request(url, headers={"User-Agent": "culldrop-server"})
+            with urllib.request.urlopen(req, timeout=60) as resp, open(tmp, "wb") as f:
+                for chunk in iter(lambda: resp.read(1 << 16), b""):
+                    size += len(chunk)
+                    if size > 64 << 20:
+                        raise ValueError(f"{name} 太大")
+                    h.update(chunk)
+                    f.write(chunk)
+            if h.hexdigest() != sha:
+                _unlink(tmp)
+                raise ValueError(f"{name} 的 SHA-256 不符")
+            os.replace(tmp, dst)
+        finally:
+            _unlink(lock_path)
+    return dst
+
+
+_retouch_vendor_warmed = threading.Event()
+
+
+def retouch_vendor_warm():
+    """第一次有人開修容時，在背景把全部的檔案抓好：瀏覽器是一個一個來要的，先抓起來後面就不用等。"""
+    for name in RETOUCH_VENDOR:
+        try:
+            retouch_vendor(name)
+        except Exception as e:
+            print(f"retouch: 下載 {name} 失敗：{e}", flush=True)
+
+
+@app.api_route("/vendor/{version}/{name}", methods=["GET", "HEAD"])
+def vendor_file(version: str, name: str):
+    if not RETOUCH or version != RETOUCH_VENDOR_VERSION or name not in RETOUCH_VENDOR:
+        raise HTTPException(404)
+    if not _retouch_vendor_warmed.is_set():
+        _retouch_vendor_warmed.set()
+        threading.Thread(target=retouch_vendor_warm, daemon=True, name="retouch-vendor").start()
+    try:
+        path = retouch_vendor(name)
+    except Exception:
+        raise HTTPException(503, "臉部模型下載失敗，伺服器要能連外網")
+    return FileResponse(path, media_type=RETOUCH_VENDOR[name][2], headers=IMMUTABLE)
+
+
+def retouch_path(album_id: int, photo_id: str, commit: str, kind: str) -> Path:
+    return DATA_DIR / "retouch" / photo_id[:2] / f"{photo_id}_{album_id}_{commit}_{kind}.{RETOUCH_KINDS[kind][0]}"
+
+
+def retouch_name(filename: str) -> str:
+    return f"{Path(filename).stem}_retouch.jpg"
+
+
+def retouch_forget(album_id: int, photo_id: str, keep=()):
+    """刪掉這張照片輸出過的修容檔；keep 裡的那幾筆留著。"""
+    folder = DATA_DIR / "retouch" / photo_id[:2]
+    if not folder.is_dir():
+        return
+    kept = tuple(f"{photo_id}_{album_id}_{c}_" for c in keep if c)
+    for p in folder.glob(f"{photo_id}_{album_id}_*"):
+        if not p.name.startswith(kept or ("\0",)):
+            _unlink(p)
+
+
+def retouch_files(album_id: int, photo_id: str, commit: str, state: dict) -> dict:
+    """這一筆修容後的檔案（原尺寸 o、預覽 p、縮圖 t / s）；還沒輸出過就現在做。"""
+    paths = {k: retouch_path(album_id, photo_id, commit, k) for k in RETOUCH_KINDS}
+    if paths["o"].exists():
+        return paths
+    paths["o"].parent.mkdir(parents=True, exist_ok=True)
+    lock_path = paths["o"].with_suffix(".lock")
+    with _retouch_render, open(lock_path, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)       # 兩個 worker 不要同時做同一張
+        try:
+            if not paths["o"].exists():
+                retouch.render(original_path(photo_id), state, paths["o"],
+                               [(paths[k], RETOUCH_KINDS[k][1], RETOUCH_KINDS[k][2]) for k in ("p", "t", "s")])
+        finally:
+            _unlink(lock_path)
+    return paths
+
+
+def retouch_warm(album_id: int, photo_id: str, commit: str, state: dict):
+    try:
+        retouch_files(album_id, photo_id, commit, state)
+        with db() as con:
+            head, _ = retouch_head(con, album_id, photo_id)
+        if head != commit:      # 做的時候又有人存了新的（或照片刪了）：這份沒人要了
+            retouch_forget(album_id, photo_id, keep=(head,))
+    except Exception as e:
+        print(f"retouch: 輸出 {photo_id[:12]} {commit} 失敗：{e}", flush=True)
+
+
+def retouch_active(con, album_id: int, with_state: bool = False) -> dict:
+    """這本相簿裡修過的照片 → 現在用的那一筆（with_state 時是 (id, 狀態)）。沒開修容就是空的。"""
+    if not RETOUCH:
+        return {}
+    if not with_state:
+        return {r["photo_id"]: r["commit_id"] for r in
+                con.execute("SELECT photo_id, commit_id FROM retouch_heads WHERE album_id=? AND active=1", (album_id,))}
+    return {r["photo_id"]: (r["id"], json.loads(r["state"])) for r in
+            con.execute("SELECT h.photo_id, c.id, c.state FROM retouch_heads h JOIN retouch_commits c ON c.id=h.commit_id "
+                        "WHERE h.album_id=? AND h.active=1", (album_id,))}
+
+
+def retouch_photo(con, key: str, photo_id: str):
+    """分享碼 + 照片 → (相簿, 照片)。沒開修容、這個連結看不到這張，都是 404。"""
+    if not RETOUCH:
+        raise HTTPException(404, "修容沒有開啟")
+    if not SHA_RE.match(photo_id):
+        raise HTTPException(404, "沒有這張照片")
+    a, visible, _ = share_view(con, key)
+    r = con.execute("SELECT * FROM photos WHERE album_id=? AND photo_id=?", (a["id"], photo_id)).fetchone()
+    if not r or (visible is not None and photo_id not in visible):
+        raise HTTPException(404, "沒有這張照片")
+    return a, r
+
+
+def retouch_head(con, album_id: int, photo_id: str):
+    """(最新一筆的 id, 狀態)；沒修過是 (None, {})。"""
+    row = con.execute("SELECT c.id, c.state FROM retouch_heads h JOIN retouch_commits c ON c.id=h.commit_id "
+                      "WHERE h.album_id=? AND h.photo_id=?", (album_id, photo_id)).fetchone()
+    return (row["id"], json.loads(row["state"])) if row else (None, {})
+
+
+def retouch_state(con, album_id: int, photo_id: str, commit: str) -> dict:
+    row = con.execute("SELECT state FROM retouch_commits WHERE id=? AND album_id=? AND photo_id=?", (commit, album_id, photo_id)).fetchone()
+    if not row:
+        raise HTTPException(404, "找不到這筆修容紀錄")
+    return json.loads(row["state"])
+
+
+def retouch_json(con, album_id: int, photo_id: str) -> dict:
+    head, state = retouch_head(con, album_id, photo_id)
+    rows = con.execute("SELECT id, parent, seq, author, message, kind, ref, changed, summary, created_at FROM retouch_commits "
+                       "WHERE album_id=? AND photo_id=? ORDER BY seq DESC", (album_id, photo_id)).fetchall()
+    commits = [{"id": r["id"], "parent": r["parent"], "seq": r["seq"], "author": r["author"], "message": r["message"], "kind": r["kind"],
+                "ref": r["ref"], "changed": json.loads(r["changed"]), "params": json.loads(r["summary"]), "at": r["created_at"]} for r in rows]
+    return {"head": head, "state": state, "commits": commits}
+
+
+def retouch_add(con, album_id: int, photo_id: str, parent, author: str, message: str, kind: str, ref, changed: list, state: dict) -> str:
+    now = time.time()
+    seq = con.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM retouch_commits WHERE album_id=? AND photo_id=?", (album_id, photo_id)).fetchone()[0]
+    body = json.dumps(state, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    commit = hashlib.sha256(f"{album_id}\n{photo_id}\n{parent}\n{author}\n{message}\n{now}\n{body}".encode()).hexdigest()[:12]
+    summary = json.dumps({fid: f["params"] for fid, f in state.items()}, ensure_ascii=False, separators=(",", ":"))
+    con.execute("INSERT INTO retouch_commits (id, album_id, photo_id, parent, seq, author, message, kind, ref, changed, summary, state, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (commit, album_id, photo_id, parent, seq, author, message, kind, ref, json.dumps(changed), summary, body, now))
+    con.execute("INSERT INTO retouch_heads (album_id, photo_id, commit_id, active) VALUES (?,?,?,?) "
+                "ON CONFLICT(album_id, photo_id) DO UPDATE SET commit_id=excluded.commit_id, active=excluded.active",
+                (album_id, photo_id, commit, 1 if state else 0))
+    con.execute("DELETE FROM retouch_commits WHERE album_id=? AND photo_id=? AND seq<=?", (album_id, photo_id, seq - RETOUCH_KEEP))
+    con.execute("UPDATE albums SET updated_at=? WHERE id=?", (now, album_id))
+    return commit
+
+
+def retouch_author(value) -> str:
+    name = " ".join("".join(ch for ch in str(value or "") if ch.isprintable()).split())
+    if not 1 <= len(name) <= 24:
+        raise HTTPException(400, "名字要 1～24 個字")
+    return name
+
+
+def retouch_throttle(request: Request):
+    ip, now = client_ip(request), time.time()
+    if len(_retouch_hits) > 10000:
+        _retouch_hits.clear()
+    rec = _retouch_hits.setdefault(ip, [0, now])
+    if now - rec[1] > RETOUCH_RATE[1]:
+        rec[0], rec[1] = 0, now
+    rec[0] += 1
+    if rec[0] > RETOUCH_RATE[0]:
+        raise HTTPException(429, "存得太頻繁，等一下再試", headers={"Retry-After": str(int(RETOUCH_RATE[1]))})
+
+
+async def retouch_body(request: Request) -> dict:
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > RETOUCH_MAX_BODY:
+        raise HTTPException(413, "資料太大")
+    buf = bytearray()
+    async for chunk in request.stream():
+        buf += chunk
+        if len(buf) > RETOUCH_MAX_BODY:
+            raise HTTPException(413, "資料太大")
+    try:
+        body = json.loads(bytes(buf) or b"{}")
+    except ValueError:
+        raise HTTPException(400, "修容資料格式錯誤")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "修容資料格式錯誤")
+    return body
+
+
+def _retouch_commit_id(value):
+    if value is not None and not (isinstance(value, str) and COMMIT_RE.match(value)):
+        raise HTTPException(400, "修容資料格式錯誤")
+    return value
+
+
+@app.get("/api/share/{key}/retouch/{photo_id}")
+def retouch_get(key: str, photo_id: str, head: str = ""):
+    """這張照片的修容：最新狀態 + 紀錄。帶 ?head=<手上那筆> 而且沒變時只回 unchanged（返圖頁用來輪詢）。"""
+    with db() as con:
+        a, _ = retouch_photo(con, key, photo_id)
+        if head:
+            cur = con.execute("SELECT commit_id FROM retouch_heads WHERE album_id=? AND photo_id=?", (a["id"], photo_id)).fetchone()
+            if cur and cur["commit_id"] == head:
+                return {"head": head, "unchanged": True}
+        return retouch_json(con, a["id"], photo_id)
+
+
+@app.get("/api/share/{key}/retouch/{photo_id}/commits/{commit}")
+def retouch_get_commit(key: str, photo_id: str, commit: str):
+    if not COMMIT_RE.match(commit):
+        raise HTTPException(404, "找不到這筆修容紀錄")
+    with db() as con:
+        a, _ = retouch_photo(con, key, photo_id)
+        return {"id": commit, "state": retouch_state(con, a["id"], photo_id, commit)}
+
+
+def _retouch_save(key: str, photo_id: str, body: dict):
+    author = retouch_author(body.get("author"))
+    message = " ".join("".join(ch for ch in str(body.get("message") or "") if ch.isprintable()).split())[:120]
+    parent = _retouch_commit_id(body.get("parent"))
+    raw = body.get("faces")
+    if not isinstance(raw, dict) or not raw or len(raw) > retouch.MAX_FACES:
+        raise HTTPException(400, "修容資料格式錯誤")
+    with db() as con:
+        con.execute("BEGIN IMMEDIATE")     # 兩個人同時存：一個一個來，後到的接在先到的後面
+        a, r = retouch_photo(con, key, photo_id)
+        if not r["width"] or not r["height"]:
+            raise HTTPException(400, "修容資料格式錯誤")
+        now, changes = round(time.time(), 3), {}
+        try:
+            for fid, face in raw.items():
+                if not isinstance(fid, str) or not retouch.FACE_ID_RE.match(fid):
+                    raise retouch.Invalid("id")
+                clean = None if face is None else retouch.clean_face(face, r["height"] / r["width"])
+                if clean:
+                    clean["by"], clean["at"] = author, now
+                changes[fid] = clean
+        except retouch.Invalid:
+            raise HTTPException(400, "修容資料格式錯誤")
+        head, head_state = retouch_head(con, a["id"], photo_id)
+        base = head_state if parent == head else retouch_state(con, a["id"], photo_id, parent) if parent else {}
+        state, changed, conflicts = retouch.merge(base, head_state, changes, bool(body.get("force")))
+        if conflicts:
+            return 409, {"code": "retouch_conflict", "conflicts": conflicts, **retouch_json(con, a["id"], photo_id)}
+        if len(state) > retouch.MAX_FACES:
+            raise HTTPException(400, "修容資料格式錯誤")
+        if changed:
+            head = retouch_add(con, a["id"], photo_id, head, author, message, "edit", None, changed, state)
+        out = retouch_json(con, a["id"], photo_id)
+        album_id = a["id"]
+    if changed:
+        retouch_published(album_id, photo_id, head, state)
+    return 200, out
+
+
+def _retouch_restore(key: str, photo_id: str, body: dict):
+    author = retouch_author(body.get("author"))
+    target = _retouch_commit_id(body.get("commit"))
+    with db() as con:
+        con.execute("BEGIN IMMEDIATE")
+        a, _ = retouch_photo(con, key, photo_id)
+        state = retouch_state(con, a["id"], photo_id, target) if target else {}
+        head, head_state = retouch_head(con, a["id"], photo_id)
+        changed = [fid for fid in sorted(set(state) | set(head_state)) if not retouch.same(state.get(fid), head_state.get(fid))]
+        if changed:
+            head = retouch_add(con, a["id"], photo_id, head, author, "", "restore", target, changed, state)
+        out = retouch_json(con, a["id"], photo_id)
+        album_id = a["id"]
+    if changed:
+        retouch_published(album_id, photo_id, head, state)
+    return 200, out
+
+
+def retouch_published(album_id: int, photo_id: str, head: str, state: dict):
+    """換了一筆：舊的輸出檔清掉，新的在背景先做好（返圖頁馬上會來要縮圖）。"""
+    retouch_forget(album_id, photo_id, keep=(head,))
+    if state:
+        threading.Thread(target=retouch_warm, args=(album_id, photo_id, head, state), daemon=True, name="retouch").start()
+
+
+async def _retouch_write(handler, key: str, photo_id: str, request: Request):
+    if not RETOUCH:
+        raise HTTPException(404, "修容沒有開啟")
+    retouch_throttle(request)
+    body = await retouch_body(request)
+    status, out = await run_in_threadpool(handler, key, photo_id, body)
+    if status == 409:
+        out["detail"] = i18n.tr("這張臉剛被別人改過", request_lang(request))
+    return JSONResponse(out, status_code=status)
+
+
+@app.post("/api/share/{key}/retouch/{photo_id}")
+async def retouch_save(key: str, photo_id: str, request: Request):
+    """存一筆。body：{"parent": 開始改時的那一筆, "author": 名字, "message": 說明, "faces": {臉 id: 臉 或 null}, "force": 撞到時用我的}。
+    faces 只放這次動的臉；別人在這段時間改的其他臉會自動併進來。同一張臉兩邊都改了回 409，讓使用者決定。"""
+    return await _retouch_write(_retouch_save, key, photo_id, request)
+
+
+@app.post("/api/share/{key}/retouch/{photo_id}/restore")
+async def retouch_restore(key: str, photo_id: str, request: Request):
+    """還原到某一筆（commit: null = 原圖）。不刪紀錄：還原本身也是一筆，之後還能再還原回來。"""
+    return await _retouch_write(_retouch_restore, key, photo_id, request)
+
+
+@app.api_route("/media/{key}/retouch/{commit}/{kind}/{photo_id}", methods=["GET", "HEAD"])
+def retouch_media(key: str, commit: str, kind: str, photo_id: str):
+    """修容後的圖。網址帶那一筆的 id，內容永遠不變，可以放心快取。"""
+    if kind not in RETOUCH_KINDS or not COMMIT_RE.match(commit):
+        raise HTTPException(404)
+    with db() as con:
+        a, r = retouch_photo(con, key, photo_id)
+        state = retouch_state(con, a["id"], photo_id, commit)
+        head, _ = retouch_head(con, a["id"], photo_id)
+    if not state:
+        raise HTTPException(404)       # 這一筆是原圖：用 /media/<key>/<kind>/<photo_id>
+    if commit != head and not retouch_path(a["id"], photo_id, commit, "o").exists():
+        retouch_forget(a["id"], photo_id, keep=(head,))     # 舊的紀錄最多留一份輸出，不讓磁碟被翻舊帳塞滿
+    try:
+        paths = retouch_files(a["id"], photo_id, commit, state)
+    except Exception:
+        raise HTTPException(500, "修容輸出失敗")
+    if kind == "o":
+        return FileResponse(paths["o"], media_type="image/jpeg", headers=IMMUTABLE, filename=retouch_name(r["filename"]))
+    return FileResponse(paths[kind], media_type="image/jpeg" if kind == "p" else "image/webp", headers=IMMUTABLE)
 
 
 # ---------- 返圖頁 ----------

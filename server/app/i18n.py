@@ -83,6 +83,15 @@ _MESSAGES = [
     ("stars 要在 1～5", "stars must be 1 to 5", "stars は 1〜5 で指定してください"),
     ("fmt 要是 jpg、raw 或 all", "fmt must be jpg, raw, or all", "fmt は jpg、raw、all のいずれかにしてください"),
     ("返圖頁檔案不存在：{}", "Gallery page file is missing: {0}", "ギャラリーページのファイルがありません: {0}"),
+    ("修容沒有開啟", "Retouching is not turned on", "レタッチは有効になっていません"),
+    ("修容資料格式錯誤", "Invalid retouch data", "レタッチデータの形式が正しくありません"),
+    ("找不到這筆修容紀錄", "Retouch record not found", "このレタッチ履歴が見つかりません"),
+    ("名字要 1～24 個字", "The name must be 1 to 24 characters", "名前は 1〜24 文字で入力してください"),
+    ("存得太頻繁，等一下再試", "Saving too often. Try again in a moment.", "保存の頻度が高すぎます。少し待ってからお試しください"),
+    ("資料太大", "The data is too large", "データが大きすぎます"),
+    ("這張臉剛被別人改過", "Someone else just changed this face", "この顔はほかの人が変更したばかりです"),
+    ("修容輸出失敗", "Couldn't render the retouched photo", "レタッチした写真を出力できませんでした"),
+    ("臉部模型下載失敗，伺服器要能連外網", "Couldn't download the face model. The server needs internet access.", "顔モデルをダウンロードできませんでした。サーバーがインターネットに接続できる必要があります"),
 ]
 _COMPILED = [(re.compile("^" + re.escape(zh).replace(r"\{\}", "(.+)") + "$", re.S), en, ja) for zh, en, ja in _MESSAGES]
 

@@ -25,7 +25,7 @@ for i, color in enumerate([(200, 80, 80), (80, 200, 80), (80, 80, 200)], 1):
 (tmp / "capt0009.ARW").write_bytes(b"II*\x00" + b"\x08\x00\x00\x00" + b"\x01" * 5000)   # 先到的 RAW，等 JPG 來配
 PYEOF
 
-(cd "$ROOT/server" && CULLDROP_DATA=$TMP/data CULLDROP_NAS_DIR=$TMP/nas CULLDROP_NAS_POLL=0.2 CULLDROP_TRUSTED_PROXIES=127.0.0.1 CULLDROP_DEVICE_TOKENS="iphone:devtok,ipad:tok2" CULLDROP_PUBLIC_URL=https://photos.test CULLDROP_WEB=$ROOT/web \
+(cd "$ROOT/server" && CULLDROP_DATA=$TMP/data CULLDROP_NAS_DIR=$TMP/nas CULLDROP_NAS_POLL=0.2 CULLDROP_TRUSTED_PROXIES=127.0.0.1 CULLDROP_DEVICE_TOKENS="iphone:devtok,ipad:tok2" CULLDROP_PUBLIC_URL=https://photos.test CULLDROP_RETOUCH=1 CULLDROP_WEB=$ROOT/web \
   $PY -m uvicorn app.main:app --host 127.0.0.1 --port $PORT > $TMP/server.log 2>&1 &)
 for i in {1..40}; do curl -s $B/healthz >/dev/null && break; sleep 0.25; done
 trap 'pkill -f "uvicorn app.main:app --host 127.0.0.1 --port $PORT"; rm -rf "$TMP"' EXIT
@@ -350,6 +350,84 @@ chk "$(curl -s -o /dev/null -w '%{http_code}' $B/api/share/$SPLIT_KEY)" 404 "old
 chk "$(curl -s -X PUT -H "$T" -H 'Content-Type: application/json' -d '{"name":"Saki","photo_ids":[]}' $B/api/manage/albums/2026_11_15_殘星會/people/saki | j 'd["share_key"] is not None')" True "person link moved"
 chk "$(curl -s -X PUT -H "$T" -H "Content-Type: application/octet-stream" -H "Content-Range: bytes 0-$((SZ-1))/$SZ" -H "X-SnapPipe-Album: 2026_11_15_" -H "X-SnapPipe-Filename: ZH8.JPG" --data-binary @$TMP/zh8.jpg $B/api/uploads/cccc0008$(printf '%032d' 0) | j 'd["duplicate"]')" True "re-send after merge is a duplicate"
 chk "$(MERGE nope 2>&1 | tail -1)" "找不到相簿：2026_11_15_" "merge refuses missing album"
+
+echo "— 修容（捏臉）：存紀錄、兩個人接力自動合併、改到同一張臉、輸出、還原"
+$PY - "$TMP" "$ROOT/server" <<'PYEOF'
+import sys
+from pathlib import Path
+from PIL import Image, ImageChops
+sys.path.insert(0, sys.argv[2])
+from app import retouch
+im = Image.effect_noise((1200, 800), 60).convert("RGB")
+ex = Image.Exif(); ex.get_ifd(0x8769)[36867] = "2026:11:20 10:00:00"
+im.save(Path(sys.argv[1]) / "RT01.JPG", "JPEG", quality=90, exif=ex)
+# 位移是 0 的格子要和原圖一模一樣；動過的只在元件的半徑內
+box = (300, 200, 900, 600)
+flat = im.transform((600, 400), Image.Transform.MESH, retouch.mesh(box, [["m", 0.5, 0.33, 0.1, 0.0, 0.0]], 1200, 800), Image.Resampling.BICUBIC)
+assert ImageChops.difference(flat, im.crop(box)).getbbox() is None, "identity mesh changed pixels"
+moved = retouch.warp(im.copy(), {"f": {"prims": [["m", 0.5, 400 / 1200, 0.1, 0.025, 0.0]]}})
+x0, y0, x1, y1 = ImageChops.difference(moved, im).getbbox()      # 圓心 (600, 400)、半徑 120px，格子邊緣差 1～2px
+assert 478 <= x0 <= 500 and 278 <= y0 <= 300 and 700 <= x1 <= 722 and 500 <= y1 <= 522, (x0, y0, x1, y1)
+PYEOF
+chk $? 0 "warp: zero displacement is the identity, changes stay inside the radius"
+RK=$(curl -s -H "$T" -H 'Content-Type: application/json' -d '{"slug":"retouch_test"}' $B/api/manage/albums | j 'd["share_key"]')
+RP=$(put $TMP/RT01.JPG "dddd0001$(printf '%036d' 0)" retouch_test | j 'd["photo_id"]')
+RU=$B/api/share/$RK/retouch/$RP
+rt() { curl -s -H 'Content-Type: application/json' -d "$1" ${2:-$RU}; }
+rtc() { curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "$1" ${2:-$RU}; }
+FA='{"box":[0.2,0.2,0.4,0.4],"params":{"slim":40},"prims":[["m",0.3,0.3,0.08,0.01,0]]}'
+FA2='{"box":[0.21,0.2,0.41,0.4],"params":{"slim":80},"prims":[["m",0.3,0.3,0.08,0.02,0]]}'
+FB='{"box":[0.6,0.2,0.8,0.4],"params":{"eye":30},"prims":[["s",0.7,0.3,1,0,0.05,0.04,0.2]]}'
+chk "$(curl -s $B/api/share/$RK | j 'd["retouch"]["vendor"].startswith("/vendor/")')" True "share json says retouch is on"
+chk "$(curl -s $RU | j '(d["head"], d["state"], d["commits"])')" "(None, {}, [])" "no history yet"
+R=$(rt "{\"parent\":null,\"author\":\"阿明\",\"message\":\"第一筆\",\"faces\":{\"faceaaaa\":$FA}}"); C1=$(echo $R | j 'd["head"]')
+chk "$(echo $R | j '(len(d["commits"]), d["state"]["faceaaaa"]["by"], d["commits"][0]["changed"], d["commits"][0]["message"])')" "(1, '阿明', ['faceaaaa'], '第一筆')" "first commit"
+chk "$(curl -s $B/api/share/$RK | j 'd["photos"][0]["retouch"]')" "$C1" "gallery points at the commit"
+chk "$(curl -s "$RU?head=$C1" | j 'd')" "{'head': '$C1', 'unchanged': True}" "polling with the current head is cheap"
+# 小美開始改的時候還沒人存過（parent = null），她改的是另一張臉 → 自動接在阿明後面
+R=$(rt "{\"parent\":null,\"author\":\"小美\",\"faces\":{\"facebbbb\":$FB}}"); C2=$(echo $R | j 'd["head"]')
+chk "$(echo $R | j '(sorted(d["state"]), d["commits"][0]["parent"] == d["commits"][1]["id"])')" "(['faceaaaa', 'facebbbb'], True)" "another face merges on top"
+# 同一張臉（位置重疊、id 不同）兩邊都改 → 409，什麼都不存；force → 用後到的
+R=$(rt "{\"parent\":null,\"author\":\"小美\",\"faces\":{\"facecccc\":$FA2}}")
+chk "$(rtc "{\"parent\":null,\"author\":\"小美\",\"faces\":{\"facecccc\":$FA2}}")" 409 "same face changed by both → 409"
+chk "$(echo $R | j '(d["code"], d["conflicts"], d["head"])')" "('retouch_conflict', ['faceaaaa'], '$C2')" "conflict names the face, nothing saved"
+R=$(rt "{\"parent\":null,\"author\":\"小美\",\"force\":true,\"faces\":{\"facecccc\":$FA2}}"); C3=$(echo $R | j 'd["head"]')
+chk "$(echo $R | j '(sorted(d["state"]), d["state"]["faceaaaa"]["params"], d["state"]["faceaaaa"]["by"])')" "(['faceaaaa', 'facebbbb'], {'slim': 80.0}, '小美')" "force keeps mine, under the existing face id"
+chk "$(rt "{\"parent\":\"$C3\",\"author\":\"小美\",\"faces\":{\"faceaaaa\":$FA2}}" | j '(d["head"], len(d["commits"]))')" "('$C3', 3)" "saving the same thing adds no commit"
+# 輸出：原尺寸、保留 EXIF、只動臉的範圍
+curl -s -o $TMP/rt_o.jpg -D $TMP/rt_h.txt $B/media/$RK/retouch/$C3/o/$RP
+chk "$(grep -ci 'RT01_retouch.jpg' $TMP/rt_h.txt)" 1 "retouched download has its own filename"
+chk "$($PY -c "
+from PIL import Image, ImageChops, ImageStat
+a, b = Image.open('$TMP/RT01.JPG'), Image.open('$TMP/rt_o.jpg')
+d = ImageChops.difference(a, b)
+inside, outside = ImageStat.Stat(d.crop((310, 310, 410, 410))).mean[0], ImageStat.Stat(d.crop((0, 600, 200, 800))).mean[0]
+print(b.size, b.getexif().get_ifd(0x8769).get(36867), inside > 4 * outside)")" "(1200, 800) 2026:11:20 10:00:00 True" "full-size render: warped at the face, untouched elsewhere, EXIF kept"
+chk "$(curl -s -o /dev/null -w '%{http_code} %{content_type}' $B/media/$RK/retouch/$C3/t/$RP)" "200 image/webp" "retouched thumbnail"
+chk "$(curl -s -o /dev/null -w '%{http_code}' $B/media/$RK/retouch/000000000000/p/$RP)" 404 "unknown commit → 404"
+chk "$(curl -s $B/api/share/$RK/zip | $PY -c "import sys, zipfile, io; print(sorted(zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())).namelist()))")" "['RT01.JPG', 'RT01_retouch.jpg']" "zip has the original and the retouched copy"
+# 還原：不刪紀錄，還原本身也是一筆
+R=$(rt "{\"commit\":\"$C1\",\"author\":\"阿明\"}" $RU/restore)
+chk "$(echo $R | j '(sorted(d["state"]), d["state"]["faceaaaa"]["params"], d["commits"][0]["kind"], d["commits"][0]["ref"], len(d["commits"]))')" "(['faceaaaa'], {'slim': 40.0}, 'restore', '$C1', 4)" "restore is a new commit, history kept"
+chk "$(ls $TMP/data/retouch/*/ | grep -c "_${C3}_")" 0 "renders of the replaced commit are removed"
+R=$(rt '{"commit":null,"author":"阿明"}' $RU/restore)
+chk "$(echo $R | j '(d["state"], len(d["commits"]))')" "({}, 5)" "restore to the original"
+chk "$(curl -s $B/api/share/$RK | j 'd["photos"][0].get("retouch")')" None "gallery shows the original again"
+chk "$(curl -s $RU/commits/$C2 | j 'sorted(d["state"])')" "['faceaaaa', 'facebbbb']" "old commits stay readable"
+# 擋掉的
+chk "$(rtc '{"author":"x","faces":{"faceaaaa":{"box":[0.2,0.2,0.4,0.4],"prims":[["m",0.9,0.6,0.05,0.01,0]]}}}')" 400 "can't warp far from the face"
+chk "$(rtc '{"author":"x","faces":{"faceaaaa":{"box":[0.2,0.2,0.4,0.4],"prims":[["m",0.3,0.3,0.05,0.04,0]]}}}')" 400 "can't push further than half the radius"
+chk "$(rtc "{\"author\":\"x\",\"faces\":{\"BAD ID\":$FA}}")" 400 "bad face id → 400"
+chk "$(rtc "{\"author\":\"x\",\"parent\":\"000000000000\",\"faces\":{\"faceaaaa\":$FA}}")" 404 "unknown parent → 404"
+chk "$(curl -s -H 'Accept-Language: en' -H 'Content-Type: application/json' -d "{\"author\":\"\",\"faces\":{\"faceaaaa\":$FA}}" $RU | j 'd["detail"]')" "The name must be 1 to 24 characters" "a name is required, errors are localized"
+chk "$(rtc "{\"author\":\"x\",\"faces\":{\"faceaaaa\":$FA}}" $B/api/share/nokey/retouch/$RP)" 404 "unknown share key → 404"
+chk "$(curl -s -o /dev/null -w '%{http_code}' $B/vendor/mediapipe-0.0.0/vision_bundle.mjs)" 404 "only the pinned vendor files are served"
+# 刪照片：紀錄和輸出的檔一起清
+C5=$(rt "{\"parent\":null,\"author\":\"阿明\",\"faces\":{\"faceaaaa\":$FA}}" | j 'd["head"]')
+chk "$(curl -s -o /dev/null -w '%{http_code}' $B/media/$RK/retouch/$C5/s/$RP)" 200 "render again after restoring"
+curl -s -o /dev/null -H "$T" -H 'Content-Type: application/json' -d "{\"photo_ids\":[\"$RP\"]}" $B/api/manage/albums/retouch_test/delete-photos
+chk "$(ls $TMP/data/retouch/*/ | grep -c .)" 0 "deleting the photo removes its renders"
+chk "$(curl -s -o /dev/null -w '%{http_code}' $RU)" 404 "and its history"
 
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

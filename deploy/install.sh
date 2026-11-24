@@ -2,10 +2,12 @@
 # Culldrop 伺服器一行安裝（Debian / Ubuntu，用 root 跑）：
 #   curl -fsSL https://raw.githubusercontent.com/normantaipei/CullDrop-server/main/deploy/install.sh | bash
 # 重跑 = 更新程式；/etc/culldrop.env（token）和 /srv/culldrop（照片）不會動。
-# 可給：CULLDROP_LANG、CULLDROP_PUBLIC_URL、CULLDROP_TRUSTED_PROXIES（有給才寫進 env，重跑也會更新）
+# 可給：CULLDROP_LANG、CULLDROP_PUBLIC_URL、CULLDROP_TRUSTED_PROXIES、CULLDROP_RETOUCH（有給才寫進 env，重跑也會更新）
+# 試還沒併進主線的版本：CULLDROP_REF=<分支或 tag>；之後不帶 CULLDROP_REF 重跑就回到主線
 set -euo pipefail
 
 REPO=${CULLDROP_REPO:-https://github.com/normantaipei/CullDrop-server.git}
+REF=${CULLDROP_REF:-}
 APP=/opt/culldrop
 DATA=/srv/culldrop
 ENV_FILE=/etc/culldrop.env
@@ -38,10 +40,10 @@ main() {
   # 不用 pull：換過來源時歷史不相關，pull 會失敗。.venv 沒進版控，不受影響
   if [ -d "$APP/.git" ]; then
     git -C "$APP" remote set-url origin "$REPO"
-    git -C "$APP" fetch -q --depth 1 origin HEAD
+    git -C "$APP" fetch -q --depth 1 origin "${REF:-HEAD}"
     git -C "$APP" reset -q --hard FETCH_HEAD
   else
-    git clone -q --depth 1 "$REPO" "$APP"
+    git clone -q --depth 1 ${REF:+--branch "$REF"} "$REPO" "$APP"
   fi
   [ -x "$APP/server/.venv/bin/python" ] || python3 -m venv "$APP/server/.venv"
   "$APP/server/.venv/bin/pip" install -q -r "$APP/server/requirements.txt"
@@ -66,6 +68,7 @@ EOF
   set_env CULLDROP_LANG "${CULLDROP_LANG:-}"
   set_env CULLDROP_PUBLIC_URL "${CULLDROP_PUBLIC_URL:-}"
   set_env CULLDROP_TRUSTED_PROXIES "${CULLDROP_TRUSTED_PROXIES:-}"
+  set_env CULLDROP_RETOUCH "${CULLDROP_RETOUCH:-}"
 
   cp "$APP/deploy/culldrop.service" /etc/systemd/system/culldrop.service
   systemctl daemon-reload

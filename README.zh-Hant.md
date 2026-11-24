@@ -66,6 +66,19 @@ curl -fsSL https://raw.githubusercontent.com/normantaipei/CullDrop-server/main/d
 
 其他系統請自己掛載，在裡面建立空檔案 `.culldrop-nas`，再設定 `CULLDROP_NAS_DIR`。
 
+## 修容
+
+給團照用：每個人修自己的臉，一個接一個。預設不開，因為拿得到分享連結的人都能用。設 `CULLDROP_RETOUCH=1` 開啟。
+
+- **選臉。** 在返圖頁打開照片，按「修容」，點一張臉。沒抓到的臉可以手動加。
+- **調整。** 九個滑桿：瘦臉、顴骨、下顎、下巴長度、眼睛大小、眼距、鼻翼、嘴巴大小、嘴角。
+- **存一筆紀錄。** 每存一次就多一筆紀錄，記著你的名字，像 commit 一樣。下一個人從這裡接著改。改不同的臉會自動合併；兩個人改到同一張臉時，後存的人選要用誰的。
+- **隨時還原。** 紀錄會列出誰改了什麼。任何一筆都能預覽或還原，也能還原成原圖。
+
+原檔永遠不會被改。返圖頁顯示修容後的版本，下載時會多一張原尺寸的 `<檔名>_retouch.jpg`。RAW 和 NAS 上的備份不會修容。
+
+找臉是在訪客的瀏覽器裡用 MediaPipe 做的，照片不會送到第三方。第一次有人開修容時，伺服器會從 jsDelivr 與 Google 下載模型檔（約 19 MB），並用固定的 SHA-256 核對。伺服器要能連外網才能完成這次下載。
+
 ## 語言
 
 返圖頁依訪客的瀏覽器語言顯示（English、繁體中文、日本語），也可以用 `?lang=ja` 指定。安裝提示依 `CULLDROP_LANG` 或系統語言，並存成伺服器預設語言，用於連結預覽。
@@ -86,6 +99,7 @@ curl -fsSL https://raw.githubusercontent.com/normantaipei/CullDrop-server/main/d
 | `CULLDROP_DEVICE_NETS` | 允許使用裝置 API 的網段 | 不限 |
 | `CULLDROP_TRUSTED_PROXIES` | 反向代理的 IP 或 CIDR | |
 | `CULLDROP_NAS_DIR` | NAS 備份目錄 | |
+| `CULLDROP_RETOUCH` | 設 `1` 開啟返圖頁的修容 | 關閉 |
 
 ## 你的責任
 

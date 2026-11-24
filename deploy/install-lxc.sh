@@ -4,6 +4,7 @@
 # 重跑 = 更新同一台（hostname 相同就沿用），token 和照片不會動。
 # 可覆寫：CT_NAME、CT_DISK_GB（照片都存這裡）、CT_CORES、CT_MEMORY、CT_NET、CT_STORAGE、CT_TEMPLATE_STORAGE
 # 對外網址：CULLDROP_PUBLIC_URL=https://…（反向代理時再加 CULLDROP_TRUSTED_PROXIES=代理 IP），會寫進 LXC 的設定
+# 開返圖頁的修容：CULLDROP_RETOUCH=1。試還沒併進主線的版本：CULLDROP_REF=<分支或 tag>
 #   例：curl -fsSL … | CT_DISK_GB=500 CT_NET=name=eth0,bridge=vmbr0,ip=192.168.1.50/24,gw=192.168.1.1 bash
 set -euo pipefail
 
@@ -17,7 +18,7 @@ DISK_GB=${CT_DISK_GB:-200}
 CORES=${CT_CORES:-2}
 MEMORY=${CT_MEMORY:-2048}
 NET=${CT_NET:-name=eth0,bridge=vmbr0,ip=dhcp}
-INSTALL_URL=${CULLDROP_INSTALL_URL:-https://raw.githubusercontent.com/normantaipei/CullDrop-server/main/deploy/install.sh}
+INSTALL_URL=${CULLDROP_INSTALL_URL:-https://raw.githubusercontent.com/normantaipei/CullDrop-server/${CULLDROP_REF:-main}/deploy/install.sh}
 
 # 支援這種內容、可用空間最大的儲存
 storage_for() {
@@ -79,7 +80,7 @@ main() {
   done
   [ -n "$online" ] || die "LXC $id 連不上網路，檢查 CT_NET（bridge、DHCP）" "LXC $id has no network. Check CT_NET (bridge, DHCP)." "LXC $id がネットワークに接続できません。CT_NET(ブリッジ、DHCP)を確認してください。"
 
-  pct exec "$id" -- bash -c "set -o pipefail; apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl ca-certificates && curl -fsSL '$INSTALL_URL' | CULLDROP_LANG='$UI_LANG' CULLDROP_PUBLIC_URL='${CULLDROP_PUBLIC_URL:-}' CULLDROP_TRUSTED_PROXIES='${CULLDROP_TRUSTED_PROXIES:-}' bash"
+  pct exec "$id" -- bash -c "set -o pipefail; apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl ca-certificates && curl -fsSL '$INSTALL_URL' | CULLDROP_LANG='$UI_LANG' CULLDROP_PUBLIC_URL='${CULLDROP_PUBLIC_URL:-}' CULLDROP_TRUSTED_PROXIES='${CULLDROP_TRUSTED_PROXIES:-}' CULLDROP_RETOUCH='${CULLDROP_RETOUCH:-}' CULLDROP_REF='${CULLDROP_REF:-}' bash"
   echo "  $(t "進去看" "Open a shell" "シェルを開く")：pct enter $id"
 }
 
