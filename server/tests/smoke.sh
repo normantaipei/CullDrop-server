@@ -456,6 +456,9 @@ chk "$(curl -s $B/api/share/$RK | j 'd["photos"][0].get("retouch")')" None "gall
 chk "$(curl -s $RU/commits/$C2 | j 'sorted(d["state"])')" "['faceaaaa', 'facebbbb']" "old commits stay readable"
 # 擋掉的
 chk "$(rtc '{"author":"x","faces":{"faceaaaa":{"box":[0.2,0.2,0.4,0.4],"prims":[["m",0.9,0.6,0.05,0.01,0]]}}}')" 400 "can't warp far from the face"
+chk "$(rtc '{"author":"x","faces":{"faceaaaa":{"box":[0.2,0.2,0.4,0.4],"prims":[["m",0.3,0.65,0.05,0.01,0]]}}}')" 400 "…nor more than a face height below it"
+chk "$(curl -s -H 'Content-Type: application/json' -d '{"parent":null,"author":"x","force":true,"faces":{"faceaaaa":{"box":[0.2,0.2,0.4,0.4],"params":{"neck":50},"prims":[["m",0.3,0.55,0.05,0.01,0]]}}}' $RU | j 'd["state"]["faceaaaa"]["params"]')" "{'neck': 50.0}" "the neck, up to a face height below the face, is allowed"
+rt '{"commit":null,"author":"x"}' $RU/restore >/dev/null
 chk "$(rtc '{"author":"x","faces":{"faceaaaa":{"box":[0.2,0.2,0.4,0.4],"prims":[["m",0.3,0.3,0.05,0.04,0]]}}}')" 400 "can't push further than half the radius"
 chk "$(rtc "{\"author\":\"x\",\"faces\":{\"BAD ID\":$FA}}")" 400 "bad face id → 400"
 chk "$(rtc "{\"author\":\"x\",\"parent\":\"000000000000\",\"faces\":{\"faceaaaa\":$FA}}")" 404 "unknown parent → 404"

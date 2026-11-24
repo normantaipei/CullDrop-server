@@ -80,8 +80,8 @@ def clean_face(raw, aspect: float):
     reach = max(bw, bh)
 
     def center(vx, vy):
-        # 元件要在這張臉附近：改臉的人不能順便動到照片的其他地方
-        cx, cy = _num(vx, x0 - bw * 0.5, x1 + bw * 0.5), _num(vy, y0 - bh * 0.5, y1 + bh * 0.5)
+        # 元件要在這張臉附近：改臉的人不能順便動到照片的其他地方。往下多留一個臉高，脖子在那裡
+        cx, cy = _num(vx, x0 - bw * 0.5, x1 + bw * 0.5), _num(vy, y0 - bh * 0.5, y1 + bh)
         return cx, cy
 
     raw_params = raw.get("params") or {}

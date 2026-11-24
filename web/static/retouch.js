@@ -45,7 +45,8 @@
 
   // ---------- 滑桿 → 變形元件 ----------
   // lm 是 MediaPipe 的 478 個特徵點（等比座標）。左右是照片上的左右。
-  function buildPrims(lm, params) {
+  /** neck：analyseNeck() 找到的脖子（沒有就用估的） */
+  function buildPrims(lm, params, neck) {
     const P = (i) => lm[i], out = [];
     const amount = (k) => clamp(params[k] || 0, -100, 100) / 100;
     const eyeA = mid(P(33), P(133)), eyeB = mid(P(362), P(263)), eyeMid = mid(eyeA, eyeB);
@@ -73,11 +74,24 @@
     }
     for (const i of [148, 176, 377, 400]) move(P(i), 0.16 * s, outward(P(i)), amount("chinW") * 0.03 * s);
     for (const i of [127, 162, 356, 389]) move(P(i), 0.22 * s, outward(P(i)), amount("temple") * 0.025 * s);
-    // 脖子：臉部模型沒有脖子的點，位置用下巴往下、臉寬的比例估。頭歪的時候脖子還是大致垂直，所以方向取臉的縱向和畫面正下方的中間
-    const down = v[1] > 0 ? unit([v[0], v[1] + 1]) : v;
-    for (const depth of [0.2, 0.4]) for (const side of [-1, 1]) {
-      move([chin[0] + down[0] * depth * tall + u[0] * side * 0.34 * s, chin[1] + down[1] * depth * tall + u[1] * side * 0.34 * s],
-        0.30 * s, [-u[0] * side, -u[1] * side], amount("neck") * 0.035 * s);
+    // 脖子：臉部模型沒有脖子的點。有骨架找到的脖子（中線、兩側的邊）就沿著邊往中線推；
+    // 沒有（還沒找、找不到肩膀）就用下巴往下、臉寬的比例估，頭歪的時候方向取臉的縱向和畫面正下方的中間
+    if (neck && amount("neck")) {
+      const span = sub(neck.base, neck.top), along = unit(span);
+      let across = [along[1], -along[0]];                  // 垂直脖子、往照片右邊
+      if (across[0] < 0) across = [-across[0], -across[1]];
+      const half = (neck.half[0] + neck.half[1]) / 2, r = 0.9 * half, rows = clamp(Math.round(Math.hypot(span[0], span[1]) / (0.7 * r)), 2, 4);
+      for (let i = 0; i < rows; i++) {
+        const c = [neck.top[0] + span[0] * (i + 0.5) / rows, neck.top[1] + span[1] * (i + 0.5) / rows];
+        move([c[0] - across[0] * neck.half[0], c[1] - across[1] * neck.half[0]], r, across, amount("neck") * 0.17 * half);
+        move([c[0] + across[0] * neck.half[1], c[1] + across[1] * neck.half[1]], r, [-across[0], -across[1]], amount("neck") * 0.17 * half);
+      }
+    } else {
+      const down = v[1] > 0 ? unit([v[0], v[1] + 1]) : v;
+      for (const depth of [0.2, 0.4]) for (const side of [-1, 1]) {
+        move([chin[0] + down[0] * depth * tall + u[0] * side * 0.34 * s, chin[1] + down[1] * depth * tall + u[1] * side * 0.34 * s],
+          0.30 * s, [-u[0] * side, -u[1] * side], amount("neck") * 0.035 * s);
+      }
     }
     // 臉部大小：只縮放臉的範圍（頭部大小會連頭髮一起）
     scale(mid(top, chin), 0.85 * s, 0.85 * tall, amount("face") * 0.2);
@@ -120,7 +134,7 @@
     // 伺服器只收臉附近的元件（位置、半徑、推的距離都有上限）；這裡先收進範圍，免得臉的比例特殊時整筆存不進去
     const bb = boxOf(lm), bw = bb[2] - bb[0], bh = bb[3] - bb[1], reach = Math.min(0.5, Math.max(bw, bh));
     for (const p of out) {
-      p[1] = r6(clamp(p[1], bb[0] - 0.48 * bw, bb[2] + 0.48 * bw)); p[2] = r6(clamp(p[2], bb[1] - 0.48 * bh, bb[3] + 0.48 * bh));
+      p[1] = r6(clamp(p[1], bb[0] - 0.48 * bw, bb[2] + 0.48 * bw)); p[2] = r6(clamp(p[2], bb[1] - 0.48 * bh, bb[3] + 0.98 * bh));
       if (p[0] === "m") {
         p[3] = r6(Math.min(p[3], reach));
         const len = Math.hypot(p[4], p[5]), max = 0.49 * p[3];
@@ -703,6 +717,97 @@
     };
   }
 
+  // ---------- 脖子 ----------
+  // 人體骨架模型給出肩膀的位置：下巴到兩肩中點就是脖子的中線。兩側的邊再從照片上找：從中線往外走，顏色突然變了的地方就是脖子的邊。
+  let posePromise = null;
+  function loadPose(vendor) {
+    posePromise = posePromise || (async () => {
+      const mp = await import(`${vendor}/vision_bundle.mjs`);
+      return mp.PoseLandmarker.createFromOptions(
+        { wasmLoaderPath: `${vendor}/vision_wasm_internal.js`, wasmBinaryPath: `${vendor}/vision_wasm_internal.wasm` },
+        { baseOptions: { modelAssetPath: `${vendor}/pose_landmarker_full.task`, delegate: "CPU" }, runningMode: "IMAGE", numPoses: 3,
+          minPoseDetectionConfidence: 0.4, minPosePresenceConfidence: 0.4 });
+    })();
+    posePromise.catch(() => { posePromise = null; });
+    return posePromise;
+  }
+
+  const POSE_NOSE = 0, POSE_SHOULDERS = [11, 12];
+  const poseCanvas = document.createElement("canvas");
+  /** 找出這張臉的主人的脖子。source 是預覽圖的畫布。回傳 {top, base, half: [左, 右], measured: [左, 右]}（等比座標；
+   *  half 是中線到兩側邊緣的距離，measured 是那一側是不是真的量到的）；找不到肩膀是 null */
+  function analyseNeck(img, pose, source, face) {
+    const iw = img.naturalWidth, ih = img.naturalHeight, fb = face.box;
+    const fw = (fb[2] - fb[0]) * iw, fh = (fb[3] - fb[1]) * iw, cx = (fb[0] + fb[2]) / 2 * iw, cy = (fb[1] + fb[3]) / 2 * iw;
+    // 骨架要看得到上半身才抓得準：臉的左右各兩個半臉寬，往下五個半臉高
+    const x0 = Math.max(0, Math.round(cx - 2.6 * fw)), x1 = Math.min(iw, Math.round(cx + 2.6 * fw));
+    const y0 = Math.max(0, Math.round(fb[1] * iw - 0.8 * fh)), y1 = Math.min(ih, Math.round(fb[1] * iw + 5.5 * fh));
+    const rw = x1 - x0, rh = y1 - y0, k = Math.min(1, 512 / Math.max(rw, rh));
+    poseCanvas.width = Math.max(8, Math.round(rw * k)); poseCanvas.height = Math.max(8, Math.round(rh * k));
+    poseCanvas.getContext("2d").drawImage(img, x0, y0, rw, rh, 0, 0, poseCanvas.width, poseCanvas.height);
+    // 這一塊裡可能有好幾個人：鼻子離這張臉最近的那一個才是
+    let body = null, best = fw * 0.6;
+    for (const points of pose.detect(poseCanvas).landmarks || []) {
+      const nose = points[POSE_NOSE], d = Math.hypot(x0 + nose.x * rw - cx, y0 + nose.y * rh - cy);
+      if (d < best) { best = d; body = points; }
+    }
+    if (!body) return null;
+    const shoulders = POSE_SHOULDERS.map((i) => body[i]);
+    if (shoulders.some((p) => (p.visibility ?? 1) < 0.4)) return null;
+    const chin = [face.lm[152][0] * iw, face.lm[152][1] * iw];
+    const middle = [x0 + (shoulders[0].x + shoulders[1].x) / 2 * rw, y0 + (shoulders[0].y + shoulders[1].y) / 2 * rh];
+    // 脖子的中線：從兩邊下顎角的中點（頭的正下方）到兩肩的中點。不能從下巴尖出發：頭一轉，下巴尖就不在脖子的正上方了
+    const jaw = mid([face.lm[58][0] * iw, face.lm[58][1] * iw], [face.lm[288][0] * iw, face.lm[288][1] * iw]);
+    const along = unit(sub(middle, jaw)), total = dist(jaw, middle);
+    const start = Math.max(dot(sub(chin, jaw), along), 0) + 0.04 * fh;       // 沿中線走到下巴的高度：脖子從那裡開始露出來
+    if (total - start < 0.15 * fh) return null;                // 肩膀幾乎貼著下巴（低頭、聳肩）：沒有脖子可以調
+    const length = (total - start) * 0.85;
+    const top = [jaw[0] + along[0] * start, jaw[1] + along[1] * start], base = [top[0] + along[0] * length, top[1] + along[1] * length];
+    let across = [along[1], -along[0]];
+    if (across[0] < 0) across = [-across[0], -across[1]];
+    // 兩側的邊：在脖子的幾個高度，從中線往外一個像素一個像素走。和剛走過的地方比突然變很多（碰到頭髮、衣領、背景），
+    // 或和中線的膚色已經差很遠，就是邊。光影造成的漸層是慢慢變的，不會被當成邊
+    const reach = Math.ceil(0.75 * fw) + 4, ox = Math.max(0, Math.floor(Math.min(top[0], base[0]) - reach)), oy = Math.max(0, Math.floor(Math.min(top[1], base[1]) - reach));
+    const ow = Math.min(iw, Math.ceil(Math.max(top[0], base[0]) + reach)) - ox, oh = Math.min(ih, Math.ceil(Math.max(top[1], base[1]) + reach)) - oy;
+    const pixels = source.getContext("2d", { willReadFrequently: true }).getImageData(ox, oy, ow, oh).data;
+    const colorAt = (x, y) => {
+      const px = Math.round(x) - ox, py = Math.round(y) - oy;
+      if (px < 0 || py < 0 || px >= ow || py >= oh) return null;
+      const i = (py * ow + px) * 4;
+      return [pixels[i], pixels[i + 1], pixels[i + 2]];
+    };
+    const gap = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    const edge = (c, side) => {
+      const center = colorAt(c[0], c[1]);
+      if (!center) return null;
+      let recent = center, strikes = 0;
+      for (let step = Math.round(0.12 * fw); step <= 0.7 * fw; step++) {
+        const here = colorAt(c[0] + across[0] * side * step, c[1] + across[1] * side * step);
+        if (!here) return null;
+        if (gap(here, recent) > 30 || gap(here, center) > 90) { if (++strikes >= 3) return step - 2; continue; }
+        strikes = 0;
+        recent = recent.map((v, i) => v * 0.75 + here[i] * 0.25);
+      }
+      return null;
+    };
+    const found = [[], []];
+    for (const t of [0.25, 0.4, 0.55, 0.7, 0.85]) {
+      const c = [top[0] + along[0] * length * t, top[1] + along[1] * length * t];
+      [-1, 1].forEach((side, n) => { const e = edge(c, side); if (e !== null) found[n].push(e); });
+    }
+    // 每一側取各高度的中位數；量不到三個、或離譜（比臉還寬、細得不像脖子）就不算
+    const measured = found.map((list) => {
+      if (list.length < 3) return null;
+      const m = list.sort((a, b) => a - b)[Math.floor(list.length / 2)];
+      return m >= 0.2 * fw && m <= 0.65 * fw ? m : null;
+    });
+    const fallback = measured[0] ?? measured[1] ?? 0.36 * fw;      // 一側量不到用另一側的；兩側都沒有用臉寬估
+    return {
+      top: [r5(top[0] / iw), r5(top[1] / iw)], base: [r5(base[0] / iw), r5(base[1] / iw)],
+      half: measured.map((m) => r5((m ?? fallback) / iw)), measured: measured.map((m) => m !== null),
+    };
+  }
+
   // ---------- 介面 ----------
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
   const newId = () => Array.from(crypto.getRandomValues(new Uint8Array(10)), (b) => "0123456789abcdefghijklmnopqrstuvwxyz"[b % 36]).join("");
@@ -868,7 +973,7 @@
       for (const x of entry) { x.f.params = { ...x.params }; x.f.preset = x.preset; rebuild(x.f); }
       if (entry.length === 1) S.sel = entry[0].f.id;        // 讓人看得到退回去的是哪張臉
       remesh(); refresh();
-      for (const x of entry) if (x.f.body === undefined && BODY_SLIDERS.some((name) => x.f.params[name])) findBody(x.f);
+      for (const x of entry) analyse(x.f);
     }
     undoBtn.onclick = () => step(S.undo, S.redo);
     redoBtn.onclick = () => step(S.redo, S.undo);
@@ -886,7 +991,13 @@
     function changed(f) {
       rebuild(f);
       remesh(); refresh();
+      analyse(f);
+    }
+
+    /** 有些滑桿要先看懂照片才能用：身體膚色要知道哪裡是皮膚，脖子要知道脖子在哪。第一次動到才去找 */
+    function analyse(f) {
       if (f.body === undefined && BODY_SLIDERS.some((name) => f.params[name])) findBody(f);
+      if (f.neck === undefined && f.params.neck) findNeck(f);
     }
 
     /** 把這張臉的數值整組換成 values × scale（預設、貼上、套用到全部都走這裡）。元件和圖層會照這張臉自己的特徵點重算 */
@@ -940,7 +1051,21 @@
     function rebuild(f) {
       // 調回和存檔時一樣：用存檔那份（可能是別人算的），畫面才會和伺服器輸出的一樣
       if (f.saved && sameParams(f.params, f.saved.params)) fromSaved(f);
-      else if (f.lm) { f.prims = buildPrims(f.lm, f.params); Object.assign(f, buildLook(f.lm, f.params, f.body || null)); }
+      else if (f.lm) { f.prims = buildPrims(f.lm, f.params, f.neck || null); Object.assign(f, buildLook(f.lm, f.params, f.body || null)); }
+    }
+
+    /** 第一次動到脖子：用骨架找肩膀、定出脖子。f.neck：undefined 還沒找、null 正在找、false 找不到（用估的）、其他是結果 */
+    async function findNeck(f) {
+      f.neck = null; S.pending++;
+      setStatus(t("找脖子的位置…（第一次要下載模型，比較久）")); refresh();
+      try {
+        const pose = await loadPose(vendor);
+        if (!S.alive) return;
+        f.neck = analyseNeck(S.img, pose, S.source, f) || false;
+        if (f.neck) setStatus(""); else toast(t("找不到肩膀，脖子的位置先用估的"));
+      } catch { f.neck = undefined; toast(t("脖子的位置分析失敗，再調一次試試")); }
+      S.pending--;
+      rebuild(f); remesh(); refresh();
     }
 
     /** 第一次動到身體的滑桿：先找出這個人露出來的皮膚。f.body：undefined 還沒找、null 正在找、false 沒有、其他是結果 */

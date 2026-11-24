@@ -21,7 +21,7 @@ Culldrop 伺服器：一台伺服器、多本相簿。
                            目錄裡要有 .culldrop-nas 標記檔才算掛上（沒掛上時掛載點是空資料夾，不能寫進去當備份）
   CULLDROP_NAS_POLL        沒工作時多久看一次（秒，預設 5）
   CULLDROP_RETOUCH         設 1 才開返圖頁的修容（捏臉）。拿得到分享連結的人都能改，所以預設不開。
-                           瀏覽器找臉用的模型（MediaPipe，約 35MB）第一次有人開修容時由伺服器下載到 <資料目錄>/vendor，伺服器要能連外網
+                           瀏覽器找臉用的模型（MediaPipe，約 45MB）第一次有人開修容時由伺服器下載到 <資料目錄>/vendor，伺服器要能連外網
 """
 
 import fcntl
@@ -1730,7 +1730,7 @@ COMMIT_RE = re.compile(r"^[0-9a-f]{12}$")
 _retouch_hits: dict = {}
 _retouch_render = threading.Semaphore(1)   # 原尺寸輸出吃記憶體，一次一張
 
-# 瀏覽器端找臉、抓特徵點、分割人像用的 MediaPipe（Apache-2.0）。檔案大（約 35MB）不放進 repo：第一次用到時下載到資料目錄，用 SHA-256 核對。
+# 瀏覽器端找臉、抓特徵點、分割人像用的 MediaPipe（Apache-2.0）。檔案大（約 45MB）不放進 repo：第一次用到時下載到資料目錄，用 SHA-256 核對。
 # 照片不會離開瀏覽器與這台伺服器；下載的只有程式和模型。離線安裝可以自己把檔案放到 <資料目錄>/vendor/<版本>/。
 RETOUCH_VENDOR_VERSION = "mediapipe-1.2.3"
 _NPM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3"
@@ -1742,6 +1742,8 @@ RETOUCH_VENDOR = {
     "face_landmarker.task": (f"{_MODELS}/face_landmarker/face_landmarker/float16/1/face_landmarker.task", "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff", "application/octet-stream"),
     "blaze_face_short_range.tflite": (f"{_MODELS}/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite", "b4578f35940bf5a1a655214a1cce5cab13eba73c1297cd78e1a04c2380b0152f", "application/octet-stream"),
     # 人像分割（哪裡是身體的皮膚）：身體膚色用。16MB，瀏覽器要用到身體的滑桿才會來拿
+    # 人體骨架（肩膀在哪）：定出脖子的位置。9MB，調脖子才會來拿
+    "pose_landmarker_full.task": (f"{_MODELS}/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task", "5134a3aad27a58b93da0088d431f366da362b44e3ccfbe3462b3827a839011b1", "application/octet-stream"),
     "selfie_multiclass_256x256.tflite": (f"{_MODELS}/image_segmenter/selfie_multiclass_256x256/float32/1/selfie_multiclass_256x256.tflite", "c6748b1253a99067ef71f7e26ca71096cd449baefa8f101900ea23016507e0e0", "application/octet-stream"),
 }
 
@@ -2097,15 +2099,13 @@ def retouch_media(key: str, commit: str, kind: str, photo_id: str):
 # ---------- 返圖頁 ----------
 
 def _static_version() -> str:
-    """返圖頁的 CSS / JS 網址帶這個：伺服器更新後網址跟著變，瀏覽器不會拿舊的快取來配新的頁面。"""
+    """返圖頁的 CSS / JS 網址帶這個：檔案一換網址就跟著變，瀏覽器不會拿舊的快取來配新的頁面。
+    每次出頁面都現算（只是看幾個檔的大小和時間），不用重啟也會跟上。"""
     h = hashlib.sha256()
     for p in sorted((WEB_DIR / "static").glob("*.*")):
         st = p.stat()
         h.update(f"{p.name}:{st.st_size}:{st.st_mtime_ns}\n".encode())
     return h.hexdigest()[:10]
-
-
-STATIC_VERSION = _static_version() if (WEB_DIR / "static").is_dir() else "0"
 
 
 def _page(title: str, description: str, og: str, lang: str) -> str:
@@ -2117,7 +2117,7 @@ def _page(title: str, description: str, og: str, lang: str) -> str:
     full = f"{title} · {name}"
     return (page.replace("{{OG}}", og).replace("{{TITLE}}", html.escape(full))
                 .replace("{{DESCRIPTION}}", html.escape(description))
-                .replace("{{LANG}}", lang).replace("{{V}}", STATIC_VERSION)
+                .replace("{{LANG}}", lang).replace("{{V}}", _static_version())
                 .replace("{{SITE_NAME}}", html.escape(name)))
 
 

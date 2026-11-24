@@ -78,7 +78,7 @@ For group photos where everyone wants to tune their own face. It is off by defau
 
 The original file is never changed. The gallery shows the retouched version, and downloads include it as `<name>_retouch.jpg` at full size. RAW files and the NAS copy are not retouched.
 
-Faces are found in the visitor's browser with MediaPipe, so photos are not sent to a third party. The server downloads the model files (about 19 MB) from jsDelivr and Google the first time someone opens Retouch, and checks them against fixed SHA-256 values. The body sliders need one more model (16 MB) that finds exposed skin; it is fetched the first time someone uses them. The server needs internet access for that one download.
+Faces are found in the visitor's browser with MediaPipe, so photos are not sent to a third party. The server downloads the model files (about 19 MB) from jsDelivr and Google the first time someone opens Retouch, and checks them against fixed SHA-256 values. Two more models are fetched only when first needed: one that finds exposed skin for the body sliders (16 MB), and a pose model that finds the shoulders so the neck slider knows where the neck is (9 MB). The server needs internet access for that one download.
 
 ## Language
 
