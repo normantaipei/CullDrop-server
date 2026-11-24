@@ -1900,6 +1900,24 @@ def retouch_json(con, album_id: int, photo_id: str) -> dict:
     return {"head": head, "state": state, "commits": commits}
 
 
+def retouch_known(con, photo_id: str, aspect: float) -> list:
+    """手機 app 在這張照片上認出的臉：位置和名字。返圖頁拿來直接找特徵點（不用整張掃）、把「臉 1」換成名字。
+    只給位置和名字，人臉向量不出這台伺服器。app 的框是 Vision 的格式（0～1、原點左下、x y 寬 高），這裡換成修容用的座標。"""
+    people = {}
+    out = []
+    for r in con.execute("SELECT data FROM face_sync WHERE kind='face' AND photo_id=? AND deleted=0 ORDER BY seq", (photo_id,)):
+        face = json.loads(r["data"])
+        box, person = face.get("box"), face.get("person")
+        if not box or box[2] <= 0 or box[3] <= 0:        # 手動標的人沒有位置
+            continue
+        if person not in people:
+            p = con.execute("SELECT data FROM face_sync WHERE kind='person' AND id=? AND deleted=0", (person,)).fetchone()
+            people[person] = json.loads(p["data"]).get("name") if p else None
+        x, y, w, h = box
+        out.append({"box": [round(x, 5), round((1 - y - h) * aspect, 5), round(x + w, 5), round((1 - y) * aspect, 5)], "name": people[person]})
+    return out
+
+
 def retouch_add(con, album_id: int, photo_id: str, parent, author: str, message: str, kind: str, ref, changed: list, state: dict) -> str:
     now = time.time()
     seq = con.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM retouch_commits WHERE album_id=? AND photo_id=?", (album_id, photo_id)).fetchone()[0]
@@ -1963,14 +1981,16 @@ def _retouch_commit_id(value):
 
 @app.get("/api/share/{key}/retouch/{photo_id}")
 def retouch_get(key: str, photo_id: str, head: str = ""):
-    """這張照片的修容：最新狀態 + 紀錄。帶 ?head=<手上那筆> 而且沒變時只回 unchanged（返圖頁用來輪詢）。"""
+    """這張照片的修容：最新狀態 + 紀錄 + app 認出的臉（known）。帶 ?head=<手上那筆> 而且沒變時只回 unchanged（返圖頁用來輪詢）。"""
     with db() as con:
-        a, _ = retouch_photo(con, key, photo_id)
+        a, r = retouch_photo(con, key, photo_id)
         if head:
             cur = con.execute("SELECT commit_id FROM retouch_heads WHERE album_id=? AND photo_id=?", (a["id"], photo_id)).fetchone()
             if cur and cur["commit_id"] == head:
                 return {"head": head, "unchanged": True}
-        return retouch_json(con, a["id"], photo_id)
+        out = retouch_json(con, a["id"], photo_id)
+        out["known"] = retouch_known(con, photo_id, r["height"] / r["width"]) if r["width"] and r["height"] else []
+        return out
 
 
 @app.get("/api/share/{key}/retouch/{photo_id}/commits/{commit}")

@@ -544,6 +544,7 @@
       sel: null, adding: false, original: false, busy: false, vision: null,
       head: null, parent: null, commits: [], preview: null, logOpen: null,     // logOpen：紀錄裡點開的是哪一筆
       boxes: {},            // 紀錄裡出現過的臉 → 位置
+      known: [],            // 手機 app 在這張照片上認出的臉：[{box, name}]
     };
     current = S;
 
@@ -616,12 +617,17 @@
     const fromSaved = (f) => { const r = f.saved; Object.assign(f, r ? { params: { ...r.params }, prims: r.prims, shapes: r.shapes || {}, layers: r.layers || [] } : blank()); };
     const dirtyFaces = () => S.faces.filter(isDirty);
     const ordered = () => [...S.faces].sort((a, b) => (a.box[0] + a.box[2]) - (b.box[0] + b.box[2]));
-    /** 「臉 N」：照片上由左到右數。紀錄裡的臉可能已經被重設、id 對不上了，就用它當時的位置找 */
+    /** 兩個框是不是同一張臉。app（Apple Vision）和這裡（MediaPipe）框的範圍不太一樣，所以中心落在對方裡面也算 */
+    const sameSpot = (a, b) => iou(a, b) > 0.3 || (inBox(a, (b[0] + b[2]) / 2, (b[1] + b[3]) / 2) && inBox(b, (a[0] + a[2]) / 2, (a[1] + a[3]) / 2));
+    /** 這張臉在 app 裡的名字（沒取名、app 沒認出來就是空的） */
+    const nameOf = (f) => (S.known.find((k) => k.name && sameSpot(k.box, f.box)) || {}).name || "";
+    /** 臉的稱呼：app 裡有名字就用名字，不然是「臉 N」（照片上由左到右數）。
+     *  紀錄裡的臉可能已經被重設、id 對不上了，就用它當時的位置找 */
     const faceLabel = (id) => {
       const list = ordered();
       let i = list.findIndex((f) => f.id === id);
       if (i < 0 && S.boxes[id]) i = list.findIndex((f) => iou(f.box, S.boxes[id]) > 0.4);
-      return i < 0 ? t("臉 ?") : t("臉 {n}", { n: i + 1 });
+      return i < 0 ? t("臉 ?") : nameOf(list[i]) || t("臉 {n}", { n: i + 1 });
     };
     const setStatus = (text) => { status.textContent = text || ""; };
     let toastTimer;
@@ -866,6 +872,7 @@
     function applyRemote(data, keepMine) {
       const mine = keepMine ? dirtyFaces() : [];
       S.head = data.head; S.commits = data.commits || [];
+      if (data.known) S.known = data.known;
       for (const c of S.commits) Object.assign(S.boxes, c.boxes);
       const remote = { ...data.state };
       for (const f of S.faces) {
@@ -1101,13 +1108,24 @@
       try { vision = await visionP; } catch { setStatus(t("找臉的模型載入失敗，重新整理再試")); return; }
       if (!S.alive) return;
       S.vision = vision;
+      const adopt = (lm) => {
+        const box = boxOf(lm), have = S.faces.find((f) => iou(f.box, box) > 0.4);
+        if (have) { if (!have.lm) have.lm = lm; }
+        else S.faces.push({ id: newId(), lm, box, ...blank(), saved: null, by: "" });
+      };
+      // app 已經認出來的臉：位置是現成的，直接在那裡找特徵點，馬上就能調
+      const iw = img.naturalWidth;
+      for (const k of S.known) {
+        const b = k.box;
+        if (S.faces.some((f) => f.lm && sameSpot(f.box, b))) continue;
+        const lm = landmarksAt(img, vision.loose, (b[0] + b[2]) / 2 * iw, (b[1] + b[3]) / 2 * iw, Math.max(b[2] - b[0], b[3] - b[1]) * iw * 2.4);
+        if (lm && sameSpot(boxOf(lm), b)) adopt(lm);
+      }
+      if (S.known.length) { refresh(); await tick(); }
+      // 再整張掃一次：app 沒分群過的照片、app 漏掉的臉
       const found = await detectFaces(img, vision, (i, n) => setStatus(t("找臉中… {p}%", { p: Math.round(i / n * 100) })), () => S.alive);
       if (!S.alive) return;
-      for (const lm of found) {
-        const box = boxOf(lm), known = S.faces.find((f) => iou(f.box, box) > 0.4);
-        if (known) { if (!known.lm) { known.lm = lm; } }
-        else S.faces.push({ id: newId(), lm, box, ...blank(), saved: null, by: "" });
-      }
+      found.forEach(adopt);
       for (const f of S.faces) if (!f.lm) await locate(f.id);
       toast(S.faces.length ? t("找到 {n} 張臉", { n: S.faces.length }) : "");
       refresh();
