@@ -74,18 +74,10 @@
     }
     for (const i of [148, 176, 377, 400]) move(P(i), 0.16 * s, outward(P(i)), amount("chinW") * 0.03 * s);
     for (const i of [127, 162, 356, 389]) move(P(i), 0.22 * s, outward(P(i)), amount("temple") * 0.025 * s);
-    // 脖子：臉部模型沒有脖子的點。有骨架找到的脖子（中線、兩側的邊）就沿著邊往中線推；
-    // 沒有（還沒找、找不到肩膀）就用下巴往下、臉寬的比例估，頭歪的時候方向取臉的縱向和畫面正下方的中間
+    // 脖子：臉部模型沒有脖子的點。找得到脖子（findNeck）就在它每一側的邊上往裡推；
+    // 找不到（還沒找、沒露出來也找不到肩膀）就用下巴往下、臉寬的比例估，頭歪的時候方向取臉的縱向和畫面正下方的中間
     if (neck && amount("neck")) {
-      const span = sub(neck.base, neck.top), along = unit(span);
-      let across = [along[1], -along[0]];                  // 垂直脖子、往照片右邊
-      if (across[0] < 0) across = [-across[0], -across[1]];
-      const half = (neck.half[0] + neck.half[1]) / 2, r = 0.9 * half, rows = clamp(Math.round(Math.hypot(span[0], span[1]) / (0.7 * r)), 2, 4);
-      for (let i = 0; i < rows; i++) {
-        const c = [neck.top[0] + span[0] * (i + 0.5) / rows, neck.top[1] + span[1] * (i + 0.5) / rows];
-        move([c[0] - across[0] * neck.half[0], c[1] - across[1] * neck.half[0]], r, across, amount("neck") * 0.17 * half);
-        move([c[0] + across[0] * neck.half[1], c[1] + across[1] * neck.half[1]], r, [-across[0], -across[1]], amount("neck") * 0.17 * half);
-      }
+      for (const [x, y, nx, ny, reach] of neck.edges) move([x, y], reach, [nx, ny], amount("neck") * 0.2 * reach);
     } else {
       const down = v[1] > 0 ? unit([v[0], v[1] + 1]) : v;
       for (const depth of [0.2, 0.4]) for (const side of [-1, 1]) {
@@ -718,7 +710,114 @@
   }
 
   // ---------- 脖子 ----------
-  // 人體骨架模型給出肩膀的位置：下巴到兩肩中點就是脖子的中線。兩側的邊再從照片上找：從中線往外走，顏色突然變了的地方就是脖子的邊。
+  // 兩種找法，結果都是「脖子邊上的幾個點 + 各自往裡的方向 + 那個點能推的範圍」：{edges: [[x, y, nx, ny, reach], …], how}
+  // 一、看皮膚（neckFromSkin）：人像分割模型會把脖子標成「身體皮膚」，貼著臉的那一塊就是，位置和輪廓都是實際的。
+  //    脖子的走向（哪兩邊算「兩側」）另外用骨架定：頭的中心到兩肩中點。光看皮膚分不出來，
+  //    側身時臉貼在脖子的一側、衣領貼在另一側，兩個都不是上下端。
+  // 二、看骨架（neckFromPose）：脖子被衣領、圍巾蓋住時沒有皮膚可看，用肩膀的位置推：下顎到兩肩中點是中線，兩側的邊再從照片上找顏色突然變的地方。
+
+  /** 用分割找這張臉底下露出來的脖子。skeleton 是 skeletonOf() 的結果（沒有就從皮膚猜走向）。沒露出來回傳 null */
+  function neckFromSkin(img, segmenter, face, skeleton) {
+    const iw = img.naturalWidth, ih = img.naturalHeight, fb = face.box;
+    const size = Math.max(fb[2] - fb[0], fb[3] - fb[1]) * iw, cx = (fb[0] + fb[2]) / 2 * iw;
+    // 只看頭和脖子附近，脖子在遮罩上才夠大
+    const x0 = Math.max(0, Math.round(cx - 1.9 * size)), x1 = Math.min(iw, Math.round(cx + 1.9 * size));
+    const y0 = Math.max(0, Math.round(fb[1] * iw - 0.6 * size)), y1 = Math.min(ih, Math.round(fb[3] * iw + 1.7 * size));
+    const rw = x1 - x0, rh = y1 - y0, k = SEG / Math.max(rw, rh), w = Math.max(8, Math.round(rw * k)), h = Math.max(8, Math.round(rh * k));
+    segCanvas.width = segCanvas.height = SEG;
+    const ctx = segCanvas.getContext("2d", { willReadFrequently: true });
+    ctx.fillStyle = "#000"; ctx.fillRect(0, 0, SEG, SEG);
+    ctx.drawImage(img, x0, y0, rw, rh, 0, 0, w, h);
+    const result = segmenter.segment(segCanvas), masks = result.confidenceMasks;
+    if (!masks || masks.length <= SEG_FACE) { result.close(); return null; }
+    const stride = masks[SEG_BODY].width, bodyConf = Float32Array.from(masks[SEG_BODY].getAsFloat32Array()), faceConf = Float32Array.from(masks[SEG_FACE].getAsFloat32Array());
+    result.close();
+    const n = w * h, isBody = new Uint8Array(n), isFace = new Uint8Array(n);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i = y * stride + x;
+      isBody[y * w + x] = bodyConf[i] > 0.5 ? 1 : 0; isFace[y * w + x] = faceConf[i] > 0.5 ? 1 : 0;
+    }
+    const around = (q) => { const x = q % w; return [x > 0 ? q - 1 : -1, x < w - 1 ? q + 1 : -1, q - w, q + w].filter((v) => v >= 0 && v < n); };
+    // 這張臉的臉部皮膚：這一塊裡可能有別人的臉，取和這張臉的框重疊最多的那一片
+    const toMask = (v, origin) => (v * iw - origin) * k;
+    const bx0 = toMask(fb[0], x0), bx1 = toMask(fb[2], x0), by0 = toMask(fb[1], y0), by1 = toMask(fb[3], y0);
+    const label = new Int32Array(n);
+    let mine = 0, mineHits = 0, mineArea = 0, labels = 0;
+    for (let start = 0; start < n; start++) {
+      if (!isFace[start] || label[start]) continue;
+      const blob = [start];
+      label[start] = ++labels;
+      let hits = 0;
+      for (let m = 0; m < blob.length; m++) {
+        const q = blob[m], x = q % w, y = Math.floor(q / w);
+        if (x >= bx0 && x <= bx1 && y >= by0 && y <= by1) hits++;
+        for (const next of around(q)) if (isFace[next] && !label[next]) { label[next] = labels; blob.push(next); }
+      }
+      if (hits > mineHits) { mine = labels; mineHits = hits; mineArea = blob.length; }
+    }
+    if (!mine) return null;
+    // 脖子 = 貼著這張臉的身體皮膚。從貼著的地方沿著皮膚往外走，最遠走 0.7 個臉的大小：領口開的時候胸口也是皮膚，不能一路算下去
+    const faceSize = Math.sqrt(mineArea), limit = 0.7 * faceSize, depth = new Float32Array(n).fill(-1), neckPx = [];
+    for (let q = 0; q < n; q++) {
+      if (isBody[q] && around(q).some((v) => label[v] === mine)) { depth[q] = 0; neckPx.push(q); }
+    }
+    for (let m = 0; m < neckPx.length; m++) {
+      const q = neckPx[m];
+      if (depth[q] >= limit) continue;
+      for (const next of around(q)) if (isBody[next] && depth[next] < 0) { depth[next] = depth[q] + 1; neckPx.push(next); }
+    }
+    const deepest = neckPx.reduce((a, q) => Math.max(a, depth[q]), 0);
+    if (neckPx.length < 20 || deepest < 0.12 * faceSize) return null;         // 只露出一條縫：沒有脖子可以調
+    // 脖子的走向：有骨架就用頭的中心 → 兩肩中點。沒有的話從皮膚猜：貼著臉的那一端 → 離臉最遠的那一端（正面的照片這樣是對的）
+    const centroid = (keep) => {
+      let sx = 0, sy = 0, count = 0;
+      for (const q of neckPx) if (keep(q)) { sx += q % w; sy += Math.floor(q / w); count++; }
+      return [sx / count, sy / count];
+    };
+    let along = skeleton ? unit(sub(mid(skeleton.shoulders[0], skeleton.shoulders[1]), skeleton.head)) : null;
+    if (!along) {
+      const start = centroid((q) => depth[q] <= 0.25 * deepest), end = centroid((q) => depth[q] >= 0.6 * deepest);
+      if (dist(start, end) < 2) return null;
+      along = unit(sub(end, start));
+    }
+    const across = [along[1], -along[0]];
+    // 耳朵、下顎兩側也常被標成身體皮膚，而且一樣貼著臉。只留沿著走向已經過了臉下緣的那一段：
+    // 臉部皮膚從頭頂往下排，七成之後的位置才算脖子
+    const position = (q) => (q % w) * along[0] + Math.floor(q / w) * along[1], facePositions = [];
+    for (let q = 0; q < n; q++) if (label[q] === mine) facePositions.push(position(q));
+    facePositions.sort((a, b) => a - b);
+    const below = facePositions[Math.floor(facePositions.length * 0.7)];
+    for (let m = neckPx.length - 1; m >= 0; m--) if (position(neckPx[m]) < below) neckPx.splice(m, 1);
+    if (neckPx.length < 12) return null;
+    const near = centroid(() => true);
+    // 沿這個方向切成幾段，每段量兩側的邊。邊的外面如果是臉（下顎那一側），那不是脖子的輪廓，不推
+    const spots = neckPx.map((q) => { const d = [q % w - near[0], Math.floor(q / w) - near[1]]; return [dot(d, along), dot(d, across)]; });
+    const tMin = Math.min(...spots.map((v) => v[0])), tMax = Math.max(...spots.map((v) => v[0]));
+    const sAll = spots.map((v) => v[1]).sort((a, b) => a - b), width = sAll[Math.floor(sAll.length * 0.95)] - sAll[Math.floor(sAll.length * 0.05)];
+    const bins = clamp(Math.round((tMax - tMin) / Math.max(1, 0.45 * width)), 2, 4), edges = [];
+    for (let b = 0; b < bins; b++) {
+      const t0 = tMin + (tMax - tMin) * b / bins, t1 = tMin + (tMax - tMin) * (b + 1) / bins, inBin = spots.filter((v) => v[0] >= t0 && v[0] <= t1);
+      if (inBin.length < 4) continue;
+      const sMin = Math.min(...inBin.map((v) => v[1])), sMax = Math.max(...inBin.map((v) => v[1])), half = (sMax - sMin) / 2, t = (t0 + t1) / 2;
+      if (half < 1) continue;
+      for (const [side, edge] of [[-1, sMin], [1, sMax]]) {
+        const at = (sv) => [near[0] + along[0] * t + across[0] * sv, near[1] + along[1] * t + across[1] * sv];
+        const outside = at(edge + side * 2.5), ox = Math.round(outside[0]), oy = Math.round(outside[1]);
+        if (ox >= 0 && oy >= 0 && ox < w && oy < h && label[oy * w + ox] === mine) continue;
+        const spot = at(edge);
+        // 推的範圍：半個脖子寬，但不能碰到臉（下巴高度的脖子兩側緊貼著下顎，範圍太大會連下顎一起收）
+        let reach = 0.85 * half;
+        const span = Math.ceil(reach), sx = Math.round(spot[0]), sy = Math.round(spot[1]);
+        for (let yy = Math.max(0, sy - span); yy <= Math.min(h - 1, sy + span); yy++) for (let xx = Math.max(0, sx - span); xx <= Math.min(w - 1, sx + span); xx++) {
+          if (label[yy * w + xx] === mine) reach = Math.min(reach, 0.9 * Math.hypot(xx - spot[0], yy - spot[1]));
+        }
+        if (reach < 1.5) continue;
+        edges.push([r5((x0 + (spot[0] + 0.5) / k) / iw), r5((y0 + (spot[1] + 0.5) / k) / iw), r5(-side * across[0]), r5(-side * across[1]), r5(reach / k / iw)]);
+      }
+    }
+    return edges.length ? { edges, how: "skin" } : null;
+  }
+
   let posePromise = null;
   function loadPose(vendor) {
     posePromise = posePromise || (async () => {
@@ -734,9 +833,9 @@
 
   const POSE_NOSE = 0, POSE_SHOULDERS = [11, 12];
   const poseCanvas = document.createElement("canvas");
-  /** 找出這張臉的主人的脖子。source 是預覽圖的畫布。回傳 {top, base, half: [左, 右], measured: [左, 右]}（等比座標；
-   *  half 是中線到兩側邊緣的距離，measured 是那一側是不是真的量到的）；找不到肩膀是 null */
-  function analyseNeck(img, pose, source, face) {
+  const POSE_EARS = [7, 8];
+  /** 這張臉的主人的骨架：兩肩、頭的中心（像素）。找不到肩膀回傳 null */
+  function skeletonOf(img, pose, face) {
     const iw = img.naturalWidth, ih = img.naturalHeight, fb = face.box;
     const fw = (fb[2] - fb[0]) * iw, fh = (fb[3] - fb[1]) * iw, cx = (fb[0] + fb[2]) / 2 * iw, cy = (fb[1] + fb[3]) / 2 * iw;
     // 骨架要看得到上半身才抓得準：臉的左右各兩個半臉寬，往下五個半臉高
@@ -751,11 +850,18 @@
       const nose = points[POSE_NOSE], d = Math.hypot(x0 + nose.x * rw - cx, y0 + nose.y * rh - cy);
       if (d < best) { best = d; body = points; }
     }
-    if (!body) return null;
-    const shoulders = POSE_SHOULDERS.map((i) => body[i]);
-    if (shoulders.some((p) => (p.visibility ?? 1) < 0.4)) return null;
+    if (!body || POSE_SHOULDERS.some((i) => (body[i].visibility ?? 1) < 0.4)) return null;
+    const px = (i) => [x0 + body[i].x * rw, y0 + body[i].y * rh];
+    const seesEars = POSE_EARS.every((i) => (body[i].visibility ?? 1) >= 0.4);
+    return { shoulders: POSE_SHOULDERS.map(px), head: seesEars ? mid(px(POSE_EARS[0]), px(POSE_EARS[1])) : [cx, cy] };
+  }
+
+  /** 脖子沒露出來時用骨架推。source 是預覽圖的畫布 */
+  function neckFromPose(img, skeleton, source, face) {
+    const iw = img.naturalWidth, ih = img.naturalHeight, fb = face.box;
+    const fw = (fb[2] - fb[0]) * iw, fh = (fb[3] - fb[1]) * iw;
     const chin = [face.lm[152][0] * iw, face.lm[152][1] * iw];
-    const middle = [x0 + (shoulders[0].x + shoulders[1].x) / 2 * rw, y0 + (shoulders[0].y + shoulders[1].y) / 2 * rh];
+    const middle = mid(skeleton.shoulders[0], skeleton.shoulders[1]);
     // 脖子的中線：從兩邊下顎角的中點（頭的正下方）到兩肩的中點。不能從下巴尖出發：頭一轉，下巴尖就不在脖子的正上方了
     const jaw = mid([face.lm[58][0] * iw, face.lm[58][1] * iw], [face.lm[288][0] * iw, face.lm[288][1] * iw]);
     const along = unit(sub(middle, jaw)), total = dist(jaw, middle);
@@ -802,10 +908,14 @@
       return m >= 0.2 * fw && m <= 0.65 * fw ? m : null;
     });
     const fallback = measured[0] ?? measured[1] ?? 0.36 * fw;      // 一側量不到用另一側的；兩側都沒有用臉寬估
-    return {
-      top: [r5(top[0] / iw), r5(top[1] / iw)], base: [r5(base[0] / iw), r5(base[1] / iw)],
-      half: measured.map((m) => r5((m ?? fallback) / iw)), measured: measured.map((m) => m !== null),
-    };
+    const half = measured.map((m) => m ?? fallback), mean = (half[0] + half[1]) / 2;
+    const rows = clamp(Math.round(length / (0.63 * mean)), 2, 4), edges = [];
+    for (let i = 0; i < rows; i++) {
+      const c = [top[0] + along[0] * length * (i + 0.5) / rows, top[1] + along[1] * length * (i + 0.5) / rows];
+      [-1, 1].forEach((side, n) => edges.push([r5((c[0] + across[0] * side * half[n]) / iw), r5((c[1] + across[1] * side * half[n]) / iw),
+        r5(-side * across[0]), r5(-side * across[1]), r5(0.85 * mean / iw)]));
+    }
+    return { edges, how: "pose" };
   }
 
   // ---------- 介面 ----------
@@ -1054,15 +1164,18 @@
       else if (f.lm) { f.prims = buildPrims(f.lm, f.params, f.neck || null); Object.assign(f, buildLook(f.lm, f.params, f.body || null)); }
     }
 
-    /** 第一次動到脖子：用骨架找肩膀、定出脖子。f.neck：undefined 還沒找、null 正在找、false 找不到（用估的）、其他是結果 */
+    /** 第一次動到脖子：先找露出來的脖子皮膚，沒有再用骨架推。f.neck：undefined 還沒找、null 正在找、false 找不到（用估的）、其他是結果 */
     async function findNeck(f) {
       f.neck = null; S.pending++;
       setStatus(t("找脖子的位置…（第一次要下載模型，比較久）")); refresh();
       try {
-        const pose = await loadPose(vendor);
+        const segmenter = await loadSegmenter(vendor), pose = await loadPose(vendor);
         if (!S.alive) return;
-        f.neck = analyseNeck(S.img, pose, S.source, f) || false;
-        if (f.neck) setStatus(""); else toast(t("找不到肩膀，脖子的位置先用估的"));
+        const skeleton = skeletonOf(S.img, pose, f);
+        f.neck = neckFromSkin(S.img, segmenter, f, skeleton) || (skeleton && neckFromPose(S.img, skeleton, S.source, f)) || false;
+        if (!S.alive) return;
+        if (f.neck && f.neck.how === "skin") setStatus("");
+        else toast(f.neck ? t("沒看到露出來的脖子，位置是照肩膀推的") : t("找不到脖子也找不到肩膀，位置先用估的"));
       } catch { f.neck = undefined; toast(t("脖子的位置分析失敗，再調一次試試")); }
       S.pending--;
       rebuild(f); remesh(); refresh();
