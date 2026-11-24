@@ -194,11 +194,12 @@
     if (shine > 0) { const [inc, exc] = skin(); layers.push(["shine", inc, exc, ...R(0.03 * s, Math.min(0.1, 0.12 * s), 0.85 * shine, 0.55)]); }
     // 膚色：美白、冷暖、紅潤合成一個調色圖層
     const whiten = amount("whiten"), warm = amount("warm"), rosy = amount("rosy");
+    // 臉的調色：[亮度曲線, RGB 倍率, 飽和度]。身體要跟著臉走的時候也用這一組
+    const tone = [whiten >= 0 ? 1 / (1 + 0.4 * whiten) : 1 - 0.3 * whiten,
+      [(1 + 0.06 * warm) * (1 + 0.05 * rosy), 1 - 0.025 * rosy, (1 - 0.06 * warm) * (1 + 0.01 * rosy)], 1 - 0.06 * Math.max(whiten, 0) + 0.1 * rosy];
     if (whiten || warm || rosy) {
       const [inc, exc] = skin();
-      layers.push(["color", inc, exc, ...R(0.06 * s, whiten >= 0 ? 1 / (1 + 0.4 * whiten) : 1 - 0.3 * whiten),
-        R((1 + 0.06 * warm) * (1 + 0.05 * rosy), 1 - 0.025 * rosy, (1 - 0.06 * warm) * (1 + 0.01 * rosy)), [0, 0, 0],
-        ...R(1 - 0.06 * Math.max(whiten, 0) + 0.1 * rosy, 0, 0)]);
+      layers.push(["color", inc, exc, ...R(0.06 * s, tone[0]), R(...tone[1]), [0, 0, 0], ...R(tone[2], 0, 0)]);
     }
     // 身體：把露出來的皮膚拉到和臉一樣的顏色（統一），或整個調亮調暗（美白）
     const match = amount("bodyMatch"), bodyWhiten = amount("bodyWhiten");
@@ -206,6 +207,11 @@
       shapes.body = body.shape;
       layers.push(["color", ["body"], [], ...R(0.012 * s, bodyWhiten >= 0 ? 1 / (1 + 0.4 * bodyWhiten) : 1 - 0.3 * bodyWhiten),
         R(...body.gains.map((g) => 1 + (g - 1) * match)), [0, 0, 0], ...R(1 - 0.06 * Math.max(bodyWhiten, 0), 0, 0)]);
+      // 統一是對齊「調過之後」的臉：臉有美白、冷暖、紅潤的話，身體照統一的程度跟著調，不然臉調白了身體還停在原本的膚色
+      if (match > 0 && (whiten || warm || rosy)) {
+        const follow = (v) => 1 + (v - 1) * match;
+        layers.push(["color", ["body"], [], ...R(0.012 * s, follow(tone[0])), R(...tone[1].map(follow)), [0, 0, 0], ...R(follow(tone[2]), 0, 0)]);
+      }
     }
     const blush = amount("blush");
     if (blush > 0) {
