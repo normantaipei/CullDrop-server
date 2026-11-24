@@ -96,6 +96,12 @@ body.rt-open { overflow: hidden; }
 .rt-chip.rt-add { background: none; border: 1px dashed var(--line); color: var(--ink-soft); }
 .rt-chip.rt-add.on { background: none; border-color: var(--brand); color: var(--ink); }
 .rt-chip:disabled { opacity: 0.4; cursor: default; }
+.rt-quick { display: flex; flex-direction: column; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.rt-quick-title { color: var(--ink); font-weight: 600; }
+.rt-presets { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.rt-chip-x { margin-left: -4px; padding: 0 4px; border: 0; background: none; color: var(--ink-soft); font: inherit; font-size: 15px; cursor: pointer; }
+.rt-slider[hidden] { display: none; }
+.rt-tools { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; }
 .rt-hint { margin: 0; color: var(--ink-soft); font-size: 13px; line-height: 1.5; }
 .rt-sliders { display: flex; flex-direction: column; gap: 4px; }
 .rt-slider { display: grid; grid-template-columns: 76px 1fr 40px; align-items: center; gap: 10px; min-height: 36px; }

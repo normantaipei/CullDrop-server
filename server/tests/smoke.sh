@@ -410,6 +410,8 @@ chk $? 0 "warp and layers: identity stays identical, changes stay inside the fac
 RK=$(curl -s -H "$T" -H 'Content-Type: application/json' -d '{"slug":"retouch_test"}' $B/api/manage/albums | j 'd["share_key"]')
 RP=$(put $TMP/RT01.JPG "dddd0001$(printf '%036d' 0)" retouch_test | j 'd["photo_id"]')
 RU=$B/api/share/$RK/retouch/$RP
+# 返圖頁的 CSS / JS 網址帶版本：更新伺服器後瀏覽器不會拿舊的快取來配新的頁面
+chk "$(curl -s $B/a/$RK | grep -c -E '/static/(style\.css|i18n\.js|retouch\.js|app\.js)\?v=[0-9a-f]{10}"')" 4 "static files are versioned"
 rt() { curl -s -H 'Content-Type: application/json' -d "$1" ${2:-$RU}; }
 rtc() { curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "$1" ${2:-$RU}; }
 FA='{"box":[0.2,0.2,0.4,0.4],"params":{"slim":40},"prims":[["m",0.3,0.3,0.08,0.01,0]]}'

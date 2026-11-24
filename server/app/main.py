@@ -2096,6 +2096,18 @@ def retouch_media(key: str, commit: str, kind: str, photo_id: str):
 
 # ---------- 返圖頁 ----------
 
+def _static_version() -> str:
+    """返圖頁的 CSS / JS 網址帶這個：伺服器更新後網址跟著變，瀏覽器不會拿舊的快取來配新的頁面。"""
+    h = hashlib.sha256()
+    for p in sorted((WEB_DIR / "static").glob("*.*")):
+        st = p.stat()
+        h.update(f"{p.name}:{st.st_size}:{st.st_mtime_ns}\n".encode())
+    return h.hexdigest()[:10]
+
+
+STATIC_VERSION = _static_version() if (WEB_DIR / "static").is_dir() else "0"
+
+
 def _page(title: str, description: str, og: str, lang: str) -> str:
     index = WEB_DIR / "index.html"
     if not index.exists():
@@ -2105,7 +2117,7 @@ def _page(title: str, description: str, og: str, lang: str) -> str:
     full = f"{title} · {name}"
     return (page.replace("{{OG}}", og).replace("{{TITLE}}", html.escape(full))
                 .replace("{{DESCRIPTION}}", html.escape(description))
-                .replace("{{LANG}}", lang)
+                .replace("{{LANG}}", lang).replace("{{V}}", STATIC_VERSION)
                 .replace("{{SITE_NAME}}", html.escape(name)))
 
 

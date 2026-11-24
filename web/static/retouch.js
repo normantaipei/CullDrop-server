@@ -20,6 +20,18 @@
   ];
   const SLIDERS = GROUPS.flatMap((g) => g[1]);
   const BODY_SLIDERS = ["bodyMatch", "bodyWhiten"];      // 要先知道哪裡是身體的皮膚才能用的
+  // 一鍵美顏：[名字, 滑桿值]。套用時整組換掉這張臉的數值，再用「強度」等比例加減
+  const PRESETS = [
+    ["自然", { smooth: 30, blemish: 30, even: 20, darkCircle: 30, eyeBright: 20, slim: 10 }],
+    ["白皙", { smooth: 45, blemish: 40, even: 35, shine: 30, darkCircle: 40, whiten: 35, eyeBright: 30, teeth: 30, bodyMatch: 70 }],
+    ["小臉", { slim: 35, vface: 30, jaw: 20, cheek: 15, eye: 15, smooth: 30, blemish: 30 }],
+    ["精緻", { eye: 20, eyeH: 10, nose: 20, bridge: 15, noseTip: 10, vface: 20, smile: 15, smooth: 35, blemish: 35, darkCircle: 40, fold: 30, eyeBright: 30, lip: 20 }],
+    ["好氣色", { rosy: 30, blush: 35, lip: 30, eyeBright: 35, teeth: 30, smooth: 30, blemish: 30, smile: 15 }],
+  ];
+  const PRESET_KEY = "culldrop.retouch.presets";      // 自己存的預設：[{name, values}]，只存在這個瀏覽器
+  const CLIP_KEY = "culldrop.retouch.clip";           // 複製的數值：{params, from}，換一張照片還在
+  const stored = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) || fallback; } catch { return fallback; } };
+  const store = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch {} };
   const GRID = 40;            // 每張臉的預覽格子數
   const POLL_MS = 8000;       // 多久看一次別人有沒有存新的
   const NAME_KEY = "culldrop.retouch.name";
@@ -745,6 +757,16 @@
     const adjust = el("div", "rt-pane");
     const faceBar = el("div", "rt-facebar");
     const hint = el("p", "rt-hint");
+    const quick = el("div", "rt-quick");
+    const presetBar = el("div", "rt-presets");
+    const strengthRow = el("label", "rt-slider"), strengthVal = el("span", "rt-slider-val", "100%");
+    const strengthIn = el("input"); strengthIn.type = "range"; strengthIn.min = 0; strengthIn.max = 150; strengthIn.step = 5; strengthIn.value = 100;
+    strengthRow.append(el("span", "rt-slider-name", t("強度")), strengthIn, strengthVal);
+    const tools = el("div", "rt-tools");
+    const copyBtn = el("button", "rt-link", t("複製數值")), pasteBtn = el("button", "rt-link", t("貼上數值"));
+    const allBtn = el("button", "rt-link", t("套用到全部的臉")), keepBtn = el("button", "rt-link", t("存成預設"));
+    tools.append(copyBtn, pasteBtn, allBtn, keepBtn);
+    quick.append(el("div", "rt-quick-title", t("一鍵美顏")), presetBar, strengthRow, tools);
     const sliders = el("div", "rt-sliders");
     const reset = el("button", "rt-btn", t("重設這張臉"));
     const who = el("div", "rt-who");
@@ -752,7 +774,7 @@
     const msgIn = el("input"); msgIn.maxLength = 120; msgIn.placeholder = t("這次改了什麼（可不填）");
     try { nameIn.value = localStorage.getItem(NAME_KEY) || ""; } catch {}
     who.append(nameIn, msgIn);
-    adjust.append(faceBar, hint, sliders, reset, who);
+    adjust.append(faceBar, hint, quick, sliders, reset, who);
     const log = el("div", "rt-pane rt-log"); log.hidden = true;
     panel.append(tabs, adjust, log);
     body.append(stage, panel);
@@ -806,10 +828,68 @@
       const f = selected();
       if (!f || !f.lm || S.preview) return;
       if (v) f.params[k] = v; else delete f.params[k];
+      f.preset = null;          // 手動調過就不算是那個預設了
+      changed(f);
+    }
+
+    /** 這張臉的數值變了：重算、重畫；動到身體的滑桿而還沒找過皮膚就去找 */
+    function changed(f) {
       rebuild(f);
       remesh(); refresh();
       if (f.body === undefined && BODY_SLIDERS.some((name) => f.params[name])) findBody(f);
     }
+
+    /** 把這張臉的數值整組換成 values × scale（預設、貼上、套用到全部都走這裡）。元件和圖層會照這張臉自己的特徵點重算 */
+    function applyParams(f, values, scale = 1) {
+      f.params = {};
+      for (const [k, , min] of SLIDERS) {
+        const v = clamp(Math.round((Number(values[k]) || 0) * scale), min, 100);
+        if (v) f.params[k] = v;
+      }
+      changed(f);
+    }
+
+    function usePreset(name, values) {
+      const f = selected();
+      if (!f || !f.lm || S.preview) return;
+      f.preset = { name, values, strength: 100 };
+      applyParams(f, values);
+    }
+    strengthIn.addEventListener("input", () => {
+      const f = selected();
+      if (!f || !f.preset || S.preview) return;
+      f.preset.strength = Number(strengthIn.value);
+      applyParams(f, f.preset.values, f.preset.strength / 100);
+    });
+    copyBtn.onclick = () => {
+      const f = selected();
+      if (!f) return;
+      store(CLIP_KEY, { params: f.params, from: `${photo.name} ${faceLabel(f.id)}` });
+      toast(t("已複製。到別張照片選一張臉，再按「貼上數值」"));
+      refresh();
+    };
+    pasteBtn.onclick = () => {
+      const f = selected(), clip = stored(CLIP_KEY, null);
+      if (!f || !f.lm || !clip || S.preview) return;
+      f.preset = null;
+      applyParams(f, clip.params || {});
+      toast(t("已貼上 {from} 的數值", { from: clip.from || "" }));
+    };
+    allBtn.onclick = () => {
+      const f = selected(), others = S.faces.filter((x) => x !== f && x.lm);
+      if (!f || !others.length || S.preview) return;
+      for (const x of others) { x.preset = f.preset ? { ...f.preset } : null; applyParams(x, f.params); }
+      toast(t("已套用到另外 {n} 張臉", { n: others.length }));
+    };
+    keepBtn.onclick = () => {
+      const f = selected();
+      if (!f || !Object.keys(f.params).length) return;
+      const name = (prompt(t("幫這組數值取個名字")) || "").trim().slice(0, 12);
+      if (!name) return;
+      store(PRESET_KEY, [...stored(PRESET_KEY, []).filter((x) => x.name !== name), { name, values: { ...f.params } }]);
+      f.preset = { name, values: { ...f.params }, strength: 100 };
+      refresh();
+    };
 
     /** 照滑桿重算這張臉的元件和圖層 */
     function rebuild(f) {
@@ -953,6 +1033,27 @@
       }
       for (const g of groupEls) { const n = f ? g.items.filter(([k]) => f.params[k]).length : 0; g.count.textContent = n ? String(n) : ""; }
       reset.disabled = locked || !f || (!edited(f) && !Object.keys(f.params).length);
+      // 一鍵美顏：內建的預設在前，自己存的在後（可以刪）
+      presetBar.textContent = "";
+      const mine = stored(PRESET_KEY, []);
+      for (const [name, values, own] of [...PRESETS.map(([n, v]) => [n, v, false]), ...mine.map((x) => [x.name, x.values, true])]) {
+        const chip = el("button", "rt-chip" + (f && f.preset && f.preset.name === name ? " on" : ""), own ? name : t(name));
+        chip.disabled = !usable;
+        chip.onclick = () => usePreset(name, values);
+        presetBar.append(chip);
+        if (own) {
+          const drop = el("button", "rt-chip-x", "×");
+          drop.setAttribute("aria-label", t("刪掉這個預設"));
+          drop.onclick = () => { if (confirm(t("刪掉預設「{name}」？", { name }))) { store(PRESET_KEY, stored(PRESET_KEY, []).filter((x) => x.name !== name)); refresh(); } };
+          presetBar.append(drop);
+        }
+      }
+      strengthRow.hidden = !(usable && f.preset);
+      if (f && f.preset) { strengthIn.value = f.preset.strength; strengthVal.textContent = `${f.preset.strength}%`; }
+      copyBtn.disabled = !f || !Object.keys(f.params).length;
+      pasteBtn.disabled = !usable || !stored(CLIP_KEY, null);
+      allBtn.disabled = !usable || !Object.keys(f.params).length || S.faces.filter((x) => x.lm).length < 2;
+      keepBtn.disabled = !usable || !Object.keys(f.params).length;
       hint.textContent = locked ? t("正在看舊的版本，不能調整")
         : !S.faces.length ? (S.vision ? t("找不到臉。按「＋ 手動加臉」，再點照片上的臉") : "")
         : !f ? t("點照片上的臉，或上面的按鈕，選一張來調")
@@ -1116,7 +1217,8 @@
       for (const f of dirty) faces[f.id] = edited(f) ? { box: f.box, params: f.params, prims: f.prims, shapes: f.shapes, layers: f.layers } : null;
       S.busy = true; setStatus(t("儲存中…")); refresh();
       try {
-        const { status: code, data } = await post(api, { parent: S.parent, author: name, message: msgIn.value.trim(), faces, force: !!force });
+        const used = dirty.find((f) => f.preset), note = used ? t("一鍵美顏：{name}", { name: PRESETS.some(([n]) => n === used.preset.name) ? t(used.preset.name) : used.preset.name }) : "";
+        const { status: code, data } = await post(api, { parent: S.parent, author: name, message: msgIn.value.trim() || note, faces, force: !!force });
         if (!S.alive) return;
         S.busy = false;
         if (code === 200) { msgIn.value = ""; applyRemote(data, false); toast(t("已儲存")); }
@@ -1253,7 +1355,7 @@
     for (const type of ["pointerup", "pointerleave", "pointercancel"]) compare.addEventListener(type, () => showOriginal(false));
     fitBtn.onclick = () => fit();
     save.onclick = () => commit(false);
-    reset.onclick = () => { const f = selected(); if (!f) return; Object.assign(f, blank()); remesh(); refresh(); };
+    reset.onclick = () => { const f = selected(); if (!f) return; Object.assign(f, blank()); f.preset = null; remesh(); refresh(); };
     nameIn.addEventListener("input", () => nameIn.classList.remove("need"));
 
     onMaskReady = () => { if (S.alive) { S.painted.clear(); remesh(); } };      // 別人存的身體遮罩解碼好了：重畫
