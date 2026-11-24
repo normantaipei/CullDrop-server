@@ -3,13 +3,12 @@
 // 找臉與特徵點用 MediaPipe（在瀏覽器裡跑，照片不會送到別的地方），模型由自己的伺服器提供。
 // 座標：照片寬 = 1 的等比座標（x ∈ [0, 1]、y ∈ [0, 高 / 寬]）。元件格式與公式見 server/app/retouch.py，兩邊要一起改。
 (() => {
-  // [組名, [[滑桿名, 標籤, 最小值], …]]；正的方向就是標籤說的方向，最小值 0 的只能往一邊調。
+  // [組名, [[滑桿名, 標籤, 最小值], …]]；一組是面板上的一個分頁。正的方向就是標籤說的方向，最小值 0 的只能往一邊調。
   // 臉型到嘴巴這幾組是搬動內容（buildPrims）；皮膚、膚色、妝感是改顏色（buildLook）
   const GROUPS = [
     ["臉型", [["face", "臉部大小", -100], ["slim", "瘦臉", -100], ["vface", "V 臉", -100], ["cheek", "收顴骨", -100], ["jaw", "收下顎", -100], ["chin", "下巴長度", -100],
-      ["chinW", "下巴寬度", -100], ["temple", "太陽穴", -100], ["forehead", "額頭高度", -100]]],
-    ["頭與脖子", [["head", "頭部大小", -100], ["neck", "瘦脖子", -100]]],
-    ["眼睛與眉毛", [["eye", "眼睛大小", -100], ["eyeH", "眼睛高度", -100], ["eyeW", "眼睛寬度", -100], ["eyeGap", "眼距", -100],
+      ["chinW", "下巴寬度", -100], ["temple", "太陽穴", -100], ["forehead", "額頭高度", -100], ["head", "頭部大小", -100], ["neck", "瘦脖子", -100]]],
+    ["眼眉", [["eye", "眼睛大小", -100], ["eyeH", "眼睛高度", -100], ["eyeW", "眼睛寬度", -100], ["eyeGap", "眼距", -100],
       ["eyePos", "眼睛位置", -100], ["eyeTilt", "眼尾上揚", -100], ["browH", "眉毛高度", -100]]],
     ["鼻子", [["noseSize", "鼻子大小", -100], ["nose", "瘦鼻翼", -100], ["bridge", "瘦鼻樑", -100], ["noseLen", "鼻子長度", -100], ["noseTip", "鼻尖上提", -100]]],
     ["嘴巴", [["mouth", "嘴巴大小", -100], ["mouthW", "嘴巴寬度", -100], ["lipUp", "上唇厚度", -100], ["lipLow", "下唇厚度", -100],
@@ -729,83 +728,106 @@
       sel: null, adding: false, original: false, busy: false, vision: null,
       pending: 0,           // 還在分析身體皮膚的臉有幾張（算完才能存）
       undo: [], redo: [],   // 上一步、下一步
+      tab: 1, showLog: false,      // 面板現在在哪個分頁（0 是一鍵美顏）；是不是在看紀錄
       head: null, parent: null, commits: [], preview: null, logOpen: null,     // logOpen：紀錄裡點開的是哪一筆
       boxes: {},            // 紀錄裡出現過的臉 → 位置
     };
     current = S;
 
-    // DOM
+    // DOM。頂列是整張照片的動作（上一步、對比、紀錄、儲存）；面板是選到的那張臉：上面選臉，中間分頁，下面是那一頁的滑桿。
+    // 桌面的面板在右邊，名字和儲存固定在面板底；手機的面板在下半，儲存在頂列，第一次存才問名字
     const root = el("div", "rt");
     const top = el("header", "rt-top");
     const back = el("button", "rt-btn", t("‹ 返回"));
     const title = el("span", "rt-title", photo.name);
-    const status = el("span", "rt-status");
-    const compare = el("button", "rt-btn", t("按住看原圖"));
-    const save = el("button", "rt-btn rt-primary", t("儲存"));
-    top.append(back, title, status, compare, save);
+    /** 頂列的按鈕：手機只顯示符號，桌面多顯示字 */
+    const iconButton = (glyph, label, cls = "") => {
+      const b = el("button", `rt-btn ${cls}`);
+      b.append(el("span", "rt-glyph", glyph), el("span", "rt-wide", label));
+      b.setAttribute("aria-label", label);
+      return b;
+    };
+    const undoBtn = iconButton("↶", t("上一步")), redoBtn = iconButton("↷", t("下一步"));
+    const compare = el("button", "rt-btn");
+    compare.append(el("span", "rt-wide", t("按住看原圖")), el("span", "rt-narrow", t("對比")));
+    const logBtn = el("button", "rt-btn rt-wide", t("紀錄"));
+    const moreBtn = el("button", "rt-btn", "⋯");
+    moreBtn.setAttribute("aria-label", t("更多"));
+    const saveTop = el("button", "rt-btn rt-primary rt-narrow", t("儲存"));
+    top.append(back, title, undoBtn, redoBtn, compare, logBtn, moreBtn, saveTop);
+    // ⋯ 選單：偶爾才用的動作收在這裡
+    const menu = el("div", "rt-menu"); menu.hidden = true;
+    const menuItem = (label) => { const b = el("button", "", label); menu.append(b); return b; };
+    const copyBtn = menuItem(t("複製數值")), pasteBtn = menuItem(t("貼上數值")), allBtn = menuItem(t("套用到全部的臉"));
+    const reset = menuItem(t("還原到上次存檔")), zeroBtn = menuItem(t("全部歸零")), logItem = menuItem(t("紀錄"));
+    logItem.className = "rt-narrow";          // 桌面的頂列已經有「紀錄」了
     const body = el("div", "rt-body");
     const stage = el("div", "rt-stage");
     const canvas = el("canvas");
     const overlay = el("div", "rt-faces");
     const banner = el("div", "rt-banner"); banner.hidden = true;
+    const status = el("div", "rt-status");          // 浮在照片下緣的一行字：找臉的進度、已儲存…
     const fitBtn = el("button", "rt-btn rt-fit", t("看全圖"));
-    stage.append(canvas, overlay, banner, fitBtn);
+    stage.append(canvas, overlay, banner, status, fitBtn);
     const panel = el("aside", "rt-panel");
-    const tabs = el("div", "rt-tabs");
-    const tabAdjust = el("button", "on", t("調整")), tabLog = el("button", "", t("紀錄"));
-    tabs.append(tabAdjust, tabLog);
-    const adjust = el("div", "rt-pane");
     const faceBar = el("div", "rt-facebar");
+    const tabBar = el("div", "rt-tabs");
     const hint = el("p", "rt-hint");
-    const quick = el("div", "rt-quick");
+    const pane = el("div", "rt-pane");
     const presetBar = el("div", "rt-presets");
-    const strengthRow = el("label", "rt-slider"), strengthVal = el("span", "rt-slider-val", "100%");
+    const strengthRow = el("div", "rt-slider"), strengthVal = el("span", "rt-slider-val", "100%");
     const strengthIn = el("input"); strengthIn.type = "range"; strengthIn.min = 0; strengthIn.max = 150; strengthIn.step = 5; strengthIn.value = 100;
     strengthRow.append(el("span", "rt-slider-name", t("強度")), strengthIn, strengthVal);
-    const tools = el("div", "rt-tools");
-    const copyBtn = el("button", "rt-link", t("複製數值")), pasteBtn = el("button", "rt-link", t("貼上數值"));
-    const allBtn = el("button", "rt-link", t("套用到全部的臉")), zeroBtn = el("button", "rt-link", t("全部歸零"));
-    tools.append(copyBtn, pasteBtn, allBtn, zeroBtn);
-    quick.append(el("div", "rt-quick-title", t("一鍵美顏")), presetBar, strengthRow, tools);
-    const sliders = el("div", "rt-sliders");
-    const steps = el("div", "rt-steps");
-    const undoBtn = el("button", "rt-btn", t("上一步")), redoBtn = el("button", "rt-btn", t("下一步")), reset = el("button", "rt-btn", t("還原到上次存檔"));
-    steps.append(undoBtn, redoBtn, reset);
-    const who = el("div", "rt-who");
-    const nameIn = el("input"); nameIn.maxLength = 24; nameIn.placeholder = t("你的名字（會記在紀錄上）");
+    const lookBox = el("div", "rt-group");
+    lookBox.append(presetBar, strengthRow, el("p", "rt-hint", t("選一個預設，再用強度加減。之後每一項還是可以到各分頁單獨調。")));
+    const log = el("div", "rt-pane rt-log"); log.hidden = true;
+    const foot = el("div", "rt-foot");
+    const nameIn = el("input"); nameIn.maxLength = 24; nameIn.placeholder = t("你的名字");
     const msgIn = el("input"); msgIn.maxLength = 120; msgIn.placeholder = t("這次改了什麼（可不填）");
     try { nameIn.value = localStorage.getItem(NAME_KEY) || ""; } catch {}
-    who.append(nameIn, msgIn);
-    adjust.append(faceBar, hint, steps, quick, sliders, who);
-    const log = el("div", "rt-pane rt-log"); log.hidden = true;
-    panel.append(tabs, adjust, log);
+    const saveFoot = el("button", "rt-btn rt-primary", t("儲存"));
+    foot.append(msgIn, nameIn, saveFoot);
+    panel.append(faceBar, tabBar, hint, pane, log, foot);
     body.append(stage, panel);
     const dialog = el("div", "rt-dialog"); dialog.hidden = true;
-    root.append(top, body, dialog);
+    root.append(top, menu, body, dialog);
     document.body.append(root);
     document.body.classList.add("rt-open");
 
-    const sliderEls = {}, groupEls = [];
-    GROUPS.forEach(([group, items], index) => {
-      const box = el("details", "rt-group"), head = el("summary"), count = el("em");
-      box.open = index === 0 || (index === 1 && window.innerWidth > 760);      // 組多，只先打開最前面的；有調過的組會標數字
-      head.append(el("span", "", t(group)), count);
-      box.append(head);
+    // 分頁：第一頁是一鍵美顏，其餘一組滑桿一頁
+    const sliderEls = {}, tabs = [];
+    const addTab = (label, box, items) => {
+      const button = el("button"), count = el("em"), index = tabs.length;
+      button.append(el("span", "", t(label)), count);
+      button.onclick = () => { S.tab = index; S.showLog = false; refresh(); };
+      tabBar.append(button);
+      pane.append(box);
+      tabs.push({ button, count, box, items });
+    };
+    addTab("一鍵", lookBox, []);
+    for (const [group, items] of GROUPS) {
+      const box = el("div", "rt-group");
       for (const [k, label, min] of items) {
-        const row = el("label", "rt-slider");
-        const name = el("span", "rt-slider-name", t(label)), val = el("span", "rt-slider-val", "0");
+        const row = el("div", "rt-slider");
+        const name = el("span", "rt-slider-name", t(label)), val = el("span", "rt-slider-val", "0"), zero = el("button", "rt-zero", "↺");
         const input = el("input"); input.type = "range"; input.min = min; input.max = 100; input.step = 1; input.value = 0;
+        input.setAttribute("aria-label", t(label));
         input.addEventListener("input", () => setParam(k, Number(input.value), true));
         input.addEventListener("change", () => { dragging = null; });
-        val.title = t("點一下歸零");
-        val.addEventListener("click", (e) => { e.preventDefault(); setParam(k, 0); });
-        row.append(name, input, val);
+        zero.setAttribute("aria-label", t("歸零"));
+        zero.onclick = () => setParam(k, 0);
+        row.append(name, input, val, zero);
         box.append(row);
-        sliderEls[k] = { input, val };
+        sliderEls[k] = { input, val, zero };
       }
-      sliders.append(box);
-      groupEls.push({ items, count });
-    });
+      addTab(group, box, items);
+    }
+    moreBtn.onclick = () => { menu.hidden = !menu.hidden; };
+    menu.addEventListener("click", () => { menu.hidden = true; });
+    root.addEventListener("pointerdown", (e) => { if (!menu.hidden && !menu.contains(e.target) && !moreBtn.contains(e.target)) menu.hidden = true; }, true);
+    const toggleLog = () => { S.showLog = !S.showLog; refresh(); };
+    logBtn.onclick = toggleLog;
+    logItem.onclick = toggleLog;
 
     // ----- 狀態 -----
     const selected = () => S.faces.find((f) => f.id === S.sel) || null;
@@ -1021,10 +1043,20 @@
 
     /** 畫面上所有會變的東西都在這裡更新 */
     function refresh() {
-      const f = selected(), dirty = dirtyFaces(), locked = !!S.preview;
-      save.disabled = S.busy || locked || !dirty.length || S.pending > 0;
-      save.textContent = dirty.length ? t("儲存（{n} 張臉）", { n: dirty.length }) : t("儲存");
-      tabLog.textContent = S.commits.length ? t("紀錄（{n}）", { n: S.commits.length }) : t("紀錄");
+      const f = selected(), dirty = dirtyFaces(), locked = !!S.preview, usable = !!f && !!f.lm && !locked;
+      // 頂列與儲存
+      for (const save of [saveTop, saveFoot]) save.disabled = S.busy || locked || !dirty.length || S.pending > 0;
+      saveFoot.textContent = dirty.length ? t("儲存（{n} 張臉）", { n: dirty.length }) : t("儲存");
+      undoBtn.disabled = locked || !S.undo.length; redoBtn.disabled = locked || !S.redo.length;
+      const logLabel = S.commits.length ? t("紀錄（{n}）", { n: S.commits.length }) : t("紀錄");
+      logBtn.textContent = logLabel; logItem.textContent = logLabel;
+      logBtn.classList.toggle("on", S.showLog);
+      // ⋯ 選單
+      copyBtn.disabled = !f || !Object.keys(f.params).length;
+      pasteBtn.disabled = !usable || !stored(CLIP_KEY, null);
+      allBtn.disabled = !usable || !Object.keys(f.params).length || S.faces.filter((x) => x.lm).length < 2;
+      reset.disabled = locked || !f || !isDirty(f);
+      zeroBtn.disabled = locked || !f || (!edited(f) && !Object.keys(f.params).length);
       // 臉的按鈕
       faceBar.textContent = "";
       for (const face of ordered()) {
@@ -1047,15 +1079,32 @@
       }
       overlay.hidden = S.original;
       stage.classList.toggle("adding", S.adding);
-      // 滑桿
-      const usable = !!f && !!f.lm && !locked;
+      // 面板：看紀錄的時候整個換成時間軸；沒選臉的時候只有一句提示
+      log.hidden = !S.showLog;
+      if (S.showLog) renderLog();
+      tabBar.hidden = S.showLog || !f;
+      pane.hidden = S.showLog || !f;
+      hint.textContent = S.showLog ? ""
+        : locked ? t("正在看舊的版本，不能調整")
+        : !S.faces.length ? (S.vision ? t("找不到臉。按「＋ 手動加臉」，再點照片上的臉") : "")
+        : !f ? t("點照片上的臉，或上面的按鈕，選一張來調")
+        : !f.lm ? t("這張臉抓不到特徵點，只能全部歸零")
+        : f.saved && f.by ? t("{name} 修過這張臉，你可以接著調", { name: f.by }) : "";
+      hint.hidden = !hint.textContent;
+      hint.classList.toggle("rt-empty", !S.showLog && !f);
+      // 分頁與滑桿
+      tabs.forEach((tab, index) => {
+        const n = f ? tab.items.filter(([k]) => f.params[k]).length : 0;
+        tab.count.textContent = index === 0 ? (f && f.preset ? "•" : "") : n ? String(n) : "";
+        tab.button.classList.toggle("on", index === S.tab);
+        tab.box.hidden = index !== S.tab;
+      });
       for (const [k] of SLIDERS) {
-        const v = f ? f.params[k] || 0 : 0;
-        sliderEls[k].input.value = v; sliderEls[k].input.disabled = !usable;
-        sliderEls[k].val.textContent = signed(v); sliderEls[k].val.classList.toggle("set", v !== 0);
+        const v = f ? f.params[k] || 0 : 0, row = sliderEls[k];
+        row.input.value = v; row.input.disabled = !usable;
+        row.val.textContent = signed(v); row.val.classList.toggle("set", v !== 0);
+        row.zero.classList.toggle("off", v === 0 || !usable);
       }
-      for (const g of groupEls) { const n = f ? g.items.filter(([k]) => f.params[k]).length : 0; g.count.textContent = n ? String(n) : ""; }
-      reset.disabled = locked || !f || !isDirty(f);
       presetBar.textContent = "";
       for (const [name, values] of PRESETS) {
         const chip = el("button", "rt-chip" + (f && f.preset && f.preset.name === name ? " on" : ""), t(name));
@@ -1065,17 +1114,6 @@
       }
       strengthRow.hidden = !(usable && f.preset);
       if (f && f.preset) { strengthIn.value = f.preset.strength; strengthVal.textContent = `${f.preset.strength}%`; }
-      copyBtn.disabled = !f || !Object.keys(f.params).length;
-      pasteBtn.disabled = !usable || !stored(CLIP_KEY, null);
-      allBtn.disabled = !usable || !Object.keys(f.params).length || S.faces.filter((x) => x.lm).length < 2;
-      zeroBtn.disabled = locked || !f || (!edited(f) && !Object.keys(f.params).length);
-      undoBtn.disabled = locked || !S.undo.length; redoBtn.disabled = locked || !S.redo.length;
-      hint.textContent = locked ? t("正在看舊的版本，不能調整")
-        : !S.faces.length ? (S.vision ? t("找不到臉。按「＋ 手動加臉」，再點照片上的臉") : "")
-        : !f ? t("點照片上的臉，或上面的按鈕，選一張來調")
-        : !f.lm ? t("這張臉抓不到特徵點，只能全部歸零")
-        : f.saved && f.by ? t("{name} 修過這張臉，你可以接著調", { name: f.by }) : "";
-      hint.hidden = !hint.textContent;
       // 舊版本的提示
       banner.hidden = !locked;
       if (locked) {
@@ -1095,17 +1133,9 @@
       S.sel = id; S.adding = false;
       const f = selected();
       if (f && focus) focusFace(f);
-      if (f) showTab(false);
+      if (f) S.showLog = false;
       refresh();
     }
-
-    function showTab(isLog) {
-      tabAdjust.classList.toggle("on", !isLog); tabLog.classList.toggle("on", isLog);
-      adjust.hidden = isLog; log.hidden = !isLog;
-      if (isLog) renderLog();
-    }
-    tabAdjust.onclick = () => showTab(false);
-    tabLog.onclick = () => showTab(true);
 
     // ----- 紀錄 -----
     function describe(c) {
@@ -1121,6 +1151,10 @@
     /** 紀錄：一條時間軸，最新的在上面，最下面是原圖。點一筆才出現能對它做的事 */
     function renderLog() {
       log.textContent = "";
+      const head = el("div", "rt-loghead"), close = el("button", "rt-link", t("‹ 回到調整"));
+      close.onclick = () => { S.showLog = false; refresh(); };
+      head.append(el("b", "", t("紀錄")), close);
+      log.append(head);
       if (!S.commits.length) { log.append(el("p", "rt-hint", t("還沒有人修過這張。存一次就會多一筆紀錄，隨時可以還原到任何一筆。"))); return; }
       const line = el("div", "rt-line");
       const node = (c) => {
@@ -1139,7 +1173,7 @@
           if (c.message) item.append(el("p", "", t("「{text}」", { text: c.message })));
         }
         if (isHead) { top.disabled = true; return item; }
-        top.onclick = () => { S.logOpen = S.logOpen === key ? null : key; renderLog(); };
+        top.onclick = () => { S.logOpen = S.logOpen === key ? null : key; refresh(); };
         if (S.logOpen === key || viewing) {
           const actions = el("div", "rt-node-actions"), look = el("button", "rt-link", viewing ? t("回到最新") : t("看這版"));
           look.onclick = () => (viewing ? leavePreview() : preview(id));
@@ -1159,14 +1193,14 @@
       log.append(line);
     }
 
-    function leavePreview() { S.preview = null; remesh(); refresh(); renderLog(); }
+    function leavePreview() { S.preview = null; remesh(); refresh(); }
 
     async function preview(id) {
       try {
         const state = id ? (await getJSON(`${api}/commits/${id}`)).state : {};
         if (!S.alive) return;
         S.preview = { id, state }; S.sel = null;
-        fit(); remesh(); refresh(); renderLog();
+        fit(); remesh(); refresh();
       } catch { toast(t("讀不到這一版")); }
     }
 
@@ -1206,7 +1240,6 @@
       if (!mine.length) S.parent = S.head;
       onChange(Object.keys(data.state || {}).length ? S.head : null);
       remesh(); refresh();
-      if (!log.hidden) renderLog();
     }
 
     /** 幫沒有特徵點的臉（別人手動加的）補找一次 */
@@ -1218,17 +1251,39 @@
       if (lm && iou(boxOf(lm), b) > 0.3) { f.lm = lm; refresh(); }
     }
 
-    function author() {
+    /** 存檔、還原要用的名字。還沒填：桌面把游標放到面板底的欄位；手機（那一列收起來了）跳出來問，填好接著做 then */
+    function author(then) {
       const name = nameIn.value.trim().replace(/\s+/g, " ");
-      if (!name) { showTab(false); nameIn.focus(); nameIn.classList.add("need"); toast(t("先填你的名字")); return null; }
-      nameIn.classList.remove("need");
-      try { localStorage.setItem(NAME_KEY, name); } catch {}
-      return name;
+      if (name) {
+        nameIn.classList.remove("need");
+        try { localStorage.setItem(NAME_KEY, name); } catch {}
+        return name;
+      }
+      if (foot.offsetParent) { nameIn.focus(); nameIn.classList.add("need"); toast(t("先填你的名字")); return null; }
+      dialog.textContent = "";
+      const box = el("form", "rt-dialog-box"), field = el("input"), actions = el("div", "rt-dialog-actions");
+      const cancel = el("button", "rt-btn", t("取消")), ok = el("button", "rt-btn rt-primary", t("繼續"));
+      field.maxLength = 24; field.placeholder = t("你的名字");
+      cancel.type = "button";
+      cancel.onclick = () => { dialog.hidden = true; };
+      box.onsubmit = (e) => {
+        e.preventDefault();
+        if (!field.value.trim()) { field.focus(); return; }
+        nameIn.value = field.value; dialog.hidden = true;
+        then();
+      };
+      actions.append(cancel, ok);
+      box.append(el("h3", "", t("你的名字")), el("p", "", t("會記在修容紀錄上，讓其他人知道是誰改的。只問這一次。")), field, actions);
+      dialog.append(box); dialog.hidden = false;
+      field.focus();
+      return null;
     }
 
     async function commit(force) {
-      const name = author(), dirty = dirtyFaces();
-      if (!name || !dirty.length || S.busy) return;
+      const dirty = dirtyFaces();
+      if (!dirty.length || S.busy) return;
+      const name = author(() => commit(force));
+      if (!name) return;
       const faces = {};
       for (const f of dirty) faces[f.id] = edited(f) ? { box: f.box, params: f.params, prims: f.prims, shapes: f.shapes, layers: f.layers } : null;
       S.busy = true; setStatus(t("儲存中…")); refresh();
@@ -1272,8 +1327,9 @@
     }
 
     async function restore(id) {
-      const name = author();
-      if (!name || S.busy) return;
+      if (S.busy) return;
+      const name = author(() => restore(id));
+      if (!name) return;
       if (dirtyFaces().length && !confirm(t("還沒儲存的修改會不見，確定要還原？"))) return;
       S.busy = true; setStatus(t("還原中…")); refresh();
       try {
@@ -1283,7 +1339,6 @@
         if (code === 200) { S.preview = null; applyRemote(data, false); toast(t("已還原")); }
         else { toast(data.detail || t("還原失敗，再試一次")); refresh(); }
       } catch { S.busy = false; toast(t("還原失敗，再試一次")); refresh(); }
-      renderLog();
     }
 
     async function poll() {
@@ -1370,7 +1425,8 @@
     compare.addEventListener("pointerdown", (e) => { e.preventDefault(); showOriginal(true); });
     for (const type of ["pointerup", "pointerleave", "pointercancel"]) compare.addEventListener(type, () => showOriginal(false));
     fitBtn.onclick = () => fit();
-    save.onclick = () => commit(false);
+    saveTop.onclick = () => commit(false);
+    saveFoot.onclick = () => commit(false);
     // 還原這張臉 = 丟掉這次還沒存的修改，回到上次存檔的樣子（沒存過就是原圖）。要連存過的也清掉用「全部歸零」
     reset.onclick = () => { const f = selected(); if (!f || S.preview) return; remember([f]); fromSaved(f); f.preset = null; remesh(); refresh(); };
     zeroBtn.onclick = () => { const f = selected(); if (!f || S.preview) return; remember([f]); Object.assign(f, blank()); f.preset = null; remesh(); refresh(); };
